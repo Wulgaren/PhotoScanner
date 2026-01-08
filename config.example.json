@@ -1,0 +1,18 @@
+{
+    "discord_token": "YOUR_BOT_TOKEN_HERE",
+    "tweetshift_channel_ids": [
+    ],
+    "score_threshold": 0.8,
+    "save_directory": "~/Pictures/TwitterImages",
+    "announcement_keywords": [
+        "announce", "announcement", "announcing",
+        "release", "released", "releasing",
+        "drop", "dropping", "drops",
+        "launch", "launching", "launched",
+        "available now", "out now", "live now",
+        "coming soon", "pre-order", "preorder",
+        "breaking", "update",
+        "giveaway", "free",
+        "limited", "exclusive"
+    ]
+}

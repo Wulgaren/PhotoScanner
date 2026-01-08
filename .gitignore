@@ -11,6 +11,9 @@ output/
 # Bad photos training folder (personal photos)
 BadPhotos/
 
+# Config with secrets (Discord token)
+config.json
+
 # Python
 __pycache__/
 *.py[cod]
