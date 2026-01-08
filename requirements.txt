@@ -1,0 +1,26 @@
+# Photo Scanner - AI-powered photo curation assistant
+# Core dependencies
+
+# Apple Photos access
+osxphotos>=0.68.0
+
+# Deep Learning
+torch>=2.0.0
+torchvision>=0.15.0
+timm>=0.9.0  # PyTorch Image Models - for pretrained models
+
+# Image processing
+Pillow>=10.0.0
+imagehash>=4.3.0  # Perceptual hashing for duplicate detection
+
+# ML utilities
+scikit-learn>=1.3.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Progress and CLI
+tqdm>=4.65.0
+rich>=13.0.0  # Beautiful terminal output
+
+# Optional: for embedding similarity
+faiss-cpu>=1.7.4  # Fast similarity search

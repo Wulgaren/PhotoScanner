@@ -1,0 +1,27 @@
+# Virtual environment
+venv/
+.venv/
+
+# Cache and model files (contain personal photo data)
+.cache/
+
+# Output files (contain personal photo paths)
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
