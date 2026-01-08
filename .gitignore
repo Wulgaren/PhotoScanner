@@ -8,6 +8,9 @@ venv/
 # Output files (contain personal photo paths)
 output/
 
+# Bad photos training folder (personal photos)
+BadPhotos/
+
 # Python
 __pycache__/
 *.py[cod]

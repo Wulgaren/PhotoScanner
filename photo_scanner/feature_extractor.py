@@ -138,24 +138,39 @@ class AestheticScorer:
         self.feature_extractor = feature_extractor
         self.model = None
         self.scaler = None
+        self.is_one_class = True
     
     def train(self, good_features: np.ndarray, bad_features: np.ndarray = None):
         """
-        Train the aesthetic scorer using one-class learning.
+        Train the aesthetic scorer.
         
-        Learns what your curated "good" photos look like, then scores new photos
-        based on how similar they are to your preferences.
+        If bad_features is provided, trains a binary classifier (good vs bad).
+        Otherwise, uses one-class learning to identify what "good" looks like.
         """
         from sklearn.preprocessing import StandardScaler
         from sklearn.svm import OneClassSVM
+        from sklearn.ensemble import RandomForestClassifier
         
         self.scaler = StandardScaler()
         good_scaled = self.scaler.fit_transform(good_features)
         
-        # One-class classification - learn what "good" looks like
-        print(f"Training on {len(good_features)} curated photos...")
-        self.model = OneClassSVM(kernel='rbf', gamma='auto', nu=0.1)
-        self.model.fit(good_scaled)
+        if bad_features is None or len(bad_features) < 10:
+            # One-class classification - learn what "good" looks like
+            print(f"Training one-class model on {len(good_features)} curated photos...")
+            self.model = OneClassSVM(kernel='rbf', gamma='auto', nu=0.1)
+            self.model.fit(good_scaled)
+            self.is_one_class = True
+        else:
+            # Binary classification - learn to distinguish good from bad
+            print(f"Training binary classifier: {len(good_features)} good, {len(bad_features)} bad...")
+            bad_scaled = self.scaler.transform(bad_features)
+            
+            X = np.vstack([good_scaled, bad_scaled])
+            y = np.array([1] * len(good_scaled) + [0] * len(bad_scaled))
+            
+            self.model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+            self.model.fit(X, y)
+            self.is_one_class = False
         
         print("Training complete!")
     
@@ -170,11 +185,15 @@ class AestheticScorer:
         
         scaled = self.scaler.transform(features.reshape(-1, self.feature_extractor.feature_dim))
         
-        # One-class SVM returns distance from boundary
-        # Positive = inside (similar to training), negative = outside (different)
-        raw_scores = self.model.decision_function(scaled)
-        # Normalize to 0-1 range using sigmoid
-        scores = 1 / (1 + np.exp(-raw_scores))
+        if self.is_one_class:
+            # One-class SVM returns distance from boundary
+            # Positive = inside (similar to training), negative = outside (different)
+            raw_scores = self.model.decision_function(scaled)
+            # Normalize to 0-1 range using sigmoid
+            scores = 1 / (1 + np.exp(-raw_scores))
+        else:
+            # Binary classifier - probability of being "good"
+            scores = self.model.predict_proba(scaled)[:, 1]
         
         return scores.flatten()
     
@@ -185,6 +204,7 @@ class AestheticScorer:
             pickle.dump({
                 'model': self.model,
                 'scaler': self.scaler,
+                'is_one_class': self.is_one_class,
             }, f)
         print(f"Model saved to {path}")
     
@@ -195,4 +215,5 @@ class AestheticScorer:
             data = pickle.load(f)
         self.model = data['model']
         self.scaler = data['scaler']
+        self.is_one_class = data.get('is_one_class', True)  # Default to one-class for old models
         print(f"Model loaded from {path}")

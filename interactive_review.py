@@ -18,6 +18,41 @@ console = Console()
 OUTPUT_DIR = Path(__file__).parent / 'output'
 
 
+def add_photos_to_album(uuids: list, album_name: str) -> bool:
+    """Add photos to an album in Apple Photos by UUID. Creates album if it doesn't exist."""
+    if not uuids:
+        return False
+    
+    # Build the UUID list for AppleScript
+    uuid_list = ', '.join(f'"{uuid}"' for uuid in uuids)
+    
+    script = f'''
+    tell application "Photos"
+        -- Create album if it doesn't exist
+        if not (exists album "{album_name}") then
+            make new album named "{album_name}"
+        end if
+        set theAlbum to album "{album_name}"
+        
+        -- Add each photo to the album
+        set uuidList to {{{uuid_list}}}
+        repeat with theUUID in uuidList
+            try
+                set theItem to media item id theUUID
+                add {{theItem}} to theAlbum
+            end try
+        end repeat
+    end tell
+    '''
+    
+    try:
+        subprocess.run(['osascript', '-e', script], check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]AppleScript error: {e.stderr}[/red]")
+        return False
+
+
 def open_in_preview(paths: list):
     """Open images in Preview app."""
     subprocess.run(['open', '-a', 'Preview'] + paths)
@@ -117,21 +152,72 @@ def interactive_review(results_file: str = None):
         
         # Options
         console.print("\n[dim]Commands:[/dim]")
-        console.print("  [cyan]v[/cyan] - View all photos in this series (opens Preview)")
-        console.print("  [cyan]f[/cyan] - Show in Finder")
-        console.print("  [cyan]y[/cyan] - Confirm deletion suggestions for this series")
-        console.print("  [cyan]n[/cyan] - Keep all photos in this series")
-        console.print("  [cyan]s[/cyan] - Skip this series")
-        console.print("  [cyan]q[/cyan] - Quit review")
+        console.print("  [cyan]v[/cyan]   - View all photos in this series (opens Preview)")
+        console.print("  [cyan]v #[/cyan] - View specific photo (e.g., v 2)")
+        console.print("  [cyan]f[/cyan]   - Show in Finder")
+        console.print("  [cyan]k #[/cyan] - Keep only photo # (delete others)")
+        console.print("  [cyan]d #[/cyan] - Delete specific photos (e.g., d 2 3)")
+        console.print("  [cyan]da[/cyan]  - Delete ALL photos in this series")
+        console.print("  [cyan]y[/cyan]   - Confirm deletion suggestions")
+        console.print("  [cyan]n[/cyan]   - Keep all photos in this series")
+        console.print("  [cyan]s[/cyan]   - Skip this series")
+        console.print("  [cyan]q[/cyan]   - Quit review")
         
         while True:
-            choice = Prompt.ask("\nAction", choices=["v", "f", "y", "n", "s", "q"], default="s")
+            choice = Prompt.ask("\nAction", default="s")
+            choice = choice.strip().lower()
             
             if choice == 'v':
                 paths = [p['path'] for p in photos]
                 open_in_preview(paths)
+            elif choice.startswith('v '):
+                # View specific photo
+                try:
+                    idx = int(choice[2:].strip()) - 1
+                    if 0 <= idx < len(photos):
+                        open_in_preview([photos[idx]['path']])
+                    else:
+                        console.print(f"[red]Invalid photo number. Choose 1-{len(photos)}[/red]")
+                except ValueError:
+                    console.print("[red]Invalid format. Use: v 2[/red]")
             elif choice == 'f':
                 open_in_finder(photos[0]['path'])
+            elif choice.startswith('k '):
+                # Keep only specific photo(s), delete others
+                try:
+                    keep_indices = [int(x.strip()) - 1 for x in choice[2:].split()]
+                    for j, p in enumerate(photos):
+                        if j in keep_indices:
+                            confirmed_keep.append(p)
+                        else:
+                            confirmed_delete.append(p)
+                    kept = len(keep_indices)
+                    deleted = len(photos) - kept
+                    console.print(f"[green]✓ Keeping {kept}, deleting {deleted}[/green]")
+                    break
+                except ValueError:
+                    console.print("[red]Invalid format. Use: k 1 (or k 1 3 to keep multiple)[/red]")
+            elif choice == 'da':
+                # Delete ALL photos in this series
+                for p in photos:
+                    confirmed_delete.append(p)
+                console.print(f"[red]✓ Deleting all {len(photos)} photos in this series[/red]")
+                break
+            elif choice.startswith('d '):
+                # Delete specific photo(s), keep others
+                try:
+                    delete_indices = [int(x.strip()) - 1 for x in choice[2:].split()]
+                    for j, p in enumerate(photos):
+                        if j in delete_indices:
+                            confirmed_delete.append(p)
+                        else:
+                            confirmed_keep.append(p)
+                    deleted = len(delete_indices)
+                    kept = len(photos) - deleted
+                    console.print(f"[green]✓ Keeping {kept}, deleting {deleted}[/green]")
+                    break
+                except ValueError:
+                    console.print("[red]Invalid format. Use: d 2 3[/red]")
             elif choice == 'y':
                 for p in photos:
                     if p['suggested_delete']:
@@ -148,6 +234,8 @@ def interactive_review(results_file: str = None):
             elif choice == 'q':
                 console.print("\n[yellow]Review interrupted.[/yellow]")
                 break
+            else:
+                console.print("[dim]Unknown command. Use v, f, k #, d #, y, n, s, or q[/dim]")
         
         if choice == 'q':
             break
@@ -168,20 +256,23 @@ def interactive_review(results_file: str = None):
         
         console.print(f"\n[green]✓[/green] Confirmed deletions saved to: {output_file}")
         
-        if Confirm.ask("\nDo you want to move these files to Trash?"):
-            console.print("\n[yellow]Moving to Trash...[/yellow]")
-            for p in confirmed_delete:
-                try:
-                    # Use osascript to move to Trash (safer than delete)
-                    subprocess.run([
-                        'osascript', '-e',
-                        f'tell application "Finder" to delete POSIX file "{p["path"]}"'
-                    ], check=True, capture_output=True)
-                    console.print(f"  [dim]Trashed: {Path(p['path']).name}[/dim]")
-                except Exception as e:
-                    console.print(f"  [red]Error trashing {Path(p['path']).name}: {e}[/red]")
+        if Confirm.ask("\nDo you want to add these photos to 'To Delete' album in Photos?"):
+            console.print("\n[yellow]Adding to 'To Delete' album in Apple Photos...[/yellow]")
             
-            console.print(f"\n[green]✓[/green] Moved {len(confirmed_delete)} files to Trash")
+            # Collect all UUIDs
+            uuids = [p.get('uuid') for p in confirmed_delete if p.get('uuid')]
+            
+            if not uuids:
+                console.print("[red]No valid UUIDs found[/red]")
+                return
+            
+            success = add_photos_to_album(uuids, "To Delete")
+            
+            if success:
+                console.print(f"\n[green]✓[/green] Added {len(uuids)} photos to 'To Delete' album")
+                console.print("[dim]Open Photos app and review the 'To Delete' album, then select all and delete[/dim]")
+            else:
+                console.print("[red]Failed to add photos to album[/red]")
 
 
 def main():
