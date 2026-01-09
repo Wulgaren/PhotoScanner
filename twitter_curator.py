@@ -69,6 +69,7 @@ else:
 ALL_IMAGES_DIR = BASE_SAVE_DIR / "all"
 CURATED_DIR = BASE_SAVE_DIR / "curated"
 ANNOUNCEMENTS_DIR = BASE_SAVE_DIR / "announcements"
+VIDEOS_DIR = BASE_SAVE_DIR / "videos"
 
 # ==========================================
 
@@ -184,15 +185,53 @@ def get_image_urls(message: discord.Message) -> list:
     # From attachments
     for attachment in message.attachments:
         if attachment.content_type and attachment.content_type.startswith('image'):
-            urls.append(attachment.url)
+            # Exclude GIFs - they go to videos folder
+            if 'gif' not in attachment.content_type.lower():
+                urls.append(attachment.url)
     
     # From embeds
     for embed in message.embeds:
         if embed.image and embed.image.url:
-            urls.append(embed.image.url)
+            # Exclude GIFs
+            if not embed.image.url.lower().endswith('.gif'):
+                urls.append(embed.image.url)
         if embed.thumbnail and embed.thumbnail.url:
             # Skip small thumbnails (usually profile pics)
             if embed.thumbnail.width and embed.thumbnail.width > 100:
+                if not embed.thumbnail.url.lower().endswith('.gif'):
+                    urls.append(embed.thumbnail.url)
+    
+    return urls
+
+
+def get_video_urls(message: discord.Message) -> list:
+    """Extract video and GIF URLs from a message."""
+    urls = []
+    
+    # From attachments
+    for attachment in message.attachments:
+        if attachment.content_type:
+            # Videos
+            if attachment.content_type.startswith('video'):
+                urls.append(attachment.url)
+            # GIFs
+            elif 'gif' in attachment.content_type.lower():
+                urls.append(attachment.url)
+    
+    # From embeds
+    for embed in message.embeds:
+        # Video embeds
+        if embed.video and embed.video.url:
+            urls.append(embed.video.url)
+        
+        # GIFs in image embeds
+        if embed.image and embed.image.url:
+            if embed.image.url.lower().endswith('.gif'):
+                urls.append(embed.image.url)
+        
+        # GIFs in thumbnails
+        if embed.thumbnail and embed.thumbnail.url:
+            if embed.thumbnail.url.lower().endswith('.gif'):
                 urls.append(embed.thumbnail.url)
     
     return urls
@@ -299,6 +338,7 @@ class TwitterCurator(discord.Client):
             'images_seen': 0,
             'images_curated': 0,
             'announcements': 0,
+            'videos_saved': 0,
         }
     
     async def setup_hook(self):
@@ -306,7 +346,7 @@ class TwitterCurator(discord.Client):
         self.session = aiohttp.ClientSession()
         
         # Create directories
-        for dir_path in [ALL_IMAGES_DIR, CURATED_DIR, ANNOUNCEMENTS_DIR]:
+        for dir_path in [ALL_IMAGES_DIR, CURATED_DIR, ANNOUNCEMENTS_DIR, VIDEOS_DIR]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
         # Load model
@@ -330,6 +370,7 @@ class TwitterCurator(discord.Client):
         print(f'\nSaving to:')
         print(f'  All images: {ALL_IMAGES_DIR}')
         print(f'  Curated:    {CURATED_DIR}')
+        print(f'  Videos/GIFs: {VIDEOS_DIR}')
         print(f'  Announcements: {ANNOUNCEMENTS_DIR}')
         print(f'{"="*50}\n')
         
@@ -379,6 +420,7 @@ class TwitterCurator(discord.Client):
         print(f'\n✓ Backfill complete! Processed {total_messages} messages')
         print(f'  Images seen: {self.stats["images_seen"]}')
         print(f'  Images curated: {self.stats["images_curated"]}')
+        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]}')
         print(f'  Announcements: {self.stats["announcements"]}')
         print(f'\n👀 Now listening for new messages...\n')
     
@@ -412,8 +454,11 @@ class TwitterCurator(discord.Client):
         # Get image URLs
         image_urls = get_image_urls(message)
         
-        if not image_urls:
-            # No images, but might be important text
+        # Get video/GIF URLs
+        video_urls = get_video_urls(message)
+        
+        if not image_urls and not video_urls:
+            # No media, but might be important text
             if is_important:
                 await self.save_announcement(tweet_info, message)
             return
@@ -421,6 +466,10 @@ class TwitterCurator(discord.Client):
         # Process each image
         for url in image_urls:
             await self.process_image(url, tweet_info, is_important, message)
+        
+        # Process each video/GIF (no curation, just save)
+        for url in video_urls:
+            await self.process_video(url, tweet_info)
     
     async def process_image(self, url: str, tweet_info: dict, is_important: bool, message: discord.Message):
         """Download, score, and save an image."""
@@ -473,6 +522,24 @@ class TwitterCurator(discord.Client):
             announce_path.write_bytes(image_data_with_meta)
             # Log announcement text
             self.log_announcement(tweet_info)
+    
+    async def process_video(self, url: str, tweet_info: dict):
+        """Download and save a video or GIF (no curation scoring)."""
+        # Download
+        video_data = await download_image(self.session, url)  # Same download function works
+        if not video_data:
+            return
+        
+        self.stats['videos_saved'] += 1
+        
+        # Generate filename
+        filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'))
+        
+        # Save to videos folder
+        video_path = VIDEOS_DIR / filename
+        video_path.write_bytes(video_data)
+        
+        print(f"🎬 VIDEO/GIF saved: {filename}")
     
     def log_announcement(self, tweet_info: dict):
         """Append announcement to the announcements.txt file."""
@@ -549,6 +616,7 @@ def main():
         print("\n\n📊 Session Stats:")
         print(f"   Images seen: {bot.stats['images_seen']}")
         print(f"   Images curated: {bot.stats['images_curated']}")
+        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']}")
         print(f"   Announcements: {bot.stats['announcements']}")
 
 
