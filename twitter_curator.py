@@ -57,12 +57,14 @@ if _config:
     ANNOUNCEMENT_KEYWORDS = _config.get('announcement_keywords', [
         "announce", "release", "drop", "launch", "available now"
     ])
+    ALWAYS_CURATE_ACCOUNTS = _config.get('always_curate_accounts', [])
 else:
     DISCORD_TOKEN = "YOUR_BOT_TOKEN_HERE"
     TWEETSHIFT_CHANNEL_IDS = []
     SCORE_THRESHOLD = 0.7
     BASE_SAVE_DIR = Path.home() / "Pictures" / "TwitterImages"
     ANNOUNCEMENT_KEYWORDS = ["announce", "release", "drop", "launch"]
+    ALWAYS_CURATE_ACCOUNTS = []
 
 ALL_IMAGES_DIR = BASE_SAVE_DIR / "all"
 CURATED_DIR = BASE_SAVE_DIR / "curated"
@@ -130,6 +132,14 @@ def is_announcement(text: str) -> bool:
     """Check if text contains announcement keywords."""
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in ANNOUNCEMENT_KEYWORDS)
+
+
+def is_always_curate_account(author: str) -> bool:
+    """Check if author matches any always-curate account keywords."""
+    if not author or not ALWAYS_CURATE_ACCOUNTS:
+        return False
+    author_lower = author.lower()
+    return any(keyword.lower() in author_lower for keyword in ALWAYS_CURATE_ACCOUNTS)
 
 
 def extract_tweet_info(message: discord.Message) -> dict:
@@ -315,6 +325,8 @@ class TwitterCurator(discord.Client):
         print(f'Logged in as: {self.user}')
         print(f'Monitoring {len(TWEETSHIFT_CHANNEL_IDS)} channels')
         print(f'Score threshold: {SCORE_THRESHOLD}')
+        if ALWAYS_CURATE_ACCOUNTS:
+            print(f'Always curate accounts: {", ".join(ALWAYS_CURATE_ACCOUNTS)}')
         print(f'\nSaving to:')
         print(f'  All images: {ALL_IMAGES_DIR}')
         print(f'  Curated:    {CURATED_DIR}')
@@ -433,15 +445,25 @@ class TwitterCurator(discord.Client):
         all_path = ALL_IMAGES_DIR / filename
         all_path.write_bytes(image_data_with_meta)
         
-        # Score image (use original data for scoring)
-        score = self.scorer.score_image(image_data)
+        # Check if author is in always-curate list
+        author = tweet_info.get('author')
+        always_curate = is_always_curate_account(author)
         
-        # Curate if good enough
-        if score >= SCORE_THRESHOLD:
+        # Score image (use original data for scoring) - skip if always curating
+        if always_curate:
+            score = None
+        else:
+            score = self.scorer.score_image(image_data)
+        
+        # Curate if good enough or always-curate account
+        if always_curate or (score is not None and score >= SCORE_THRESHOLD):
             self.stats['images_curated'] += 1
             curated_path = CURATED_DIR / filename
             curated_path.write_bytes(image_data_with_meta)
-            print(f"⭐ CURATED ({score:.2f}): {filename}")
+            if always_curate:
+                print(f"⭐ CURATED (always: {author}): {filename}")
+            else:
+                print(f"⭐ CURATED ({score:.2f}): {filename}")
         else:
             print(f"   Skipped ({score:.2f}): {filename}")
         
@@ -492,7 +514,14 @@ def main():
                        help='Backfill messages from the last N hours (default: 0, live only)')
     parser.add_argument('--no-listen', action='store_true',
                        help='Exit after backfill instead of listening for new messages')
+    parser.add_argument('--threshold', type=float, default=None,
+                       help=f'Score threshold for curation (default: {SCORE_THRESHOLD} from config)')
     args = parser.parse_args()
+    
+    # Override threshold if provided via CLI
+    global SCORE_THRESHOLD
+    if args.threshold is not None:
+        SCORE_THRESHOLD = args.threshold
     
     if DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("❌ Please set your Discord bot token in config.json")

@@ -14,5 +14,9 @@
         "breaking", "update",
         "giveaway", "free",
         "limited", "exclusive"
+    ],
+    "always_curate_accounts": [
+        "favorite_artist",
+        "another_account"
     ]
 }

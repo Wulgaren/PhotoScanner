@@ -173,20 +173,23 @@ def check_feedback(album_name: str = "To Delete"):
         new_rescued = set()
         new_deleted = set()
     
-    # Photos still in album are also bad (user is done sorting)
-    new_bad = still_in_album - previously_deleted
+    # Photos still in album are pending review - don't count as good or bad yet
+    pending_review = still_in_album - previously_deleted
     
     console.print(f"\n[bold]Results:[/bold]")
     console.print(f"  • Rescued (you kept them): [green]{len(new_rescued)}[/green]")
-    console.print(f"  • Still in album (bad): [red]{len(new_bad)}[/red]")
+    console.print(f"  • Still in album (pending review): [yellow]{len(pending_review)}[/yellow]")
     console.print(f"  • Already deleted (bad): [red]{len(new_deleted)}[/red]")
     console.print(f"  • Previously processed: {len(previously_rescued) + len(previously_deleted)}")
     
-    # Combine all bad photos (still in album + deleted)
-    all_new_bad = new_bad | new_deleted
+    # Only count deleted photos as bad - photos still in album are pending review
+    all_new_bad = new_deleted
     
     if not new_rescued and not all_new_bad:
-        console.print("\n[yellow]No new feedback to process.[/yellow]")
+        if pending_review:
+            console.print(f"\n[yellow]No new feedback to process ({len(pending_review)} photos still pending review in album).[/yellow]")
+        else:
+            console.print("\n[yellow]No new feedback to process.[/yellow]")
         return
     
     # Show summary
@@ -198,25 +201,28 @@ def check_feedback(album_name: str = "To Delete"):
             console.print(f"  [dim]... and {len(new_rescued) - 5} more[/dim]")
     
     if all_new_bad:
-        console.print(f"\n[red]Bad photos ({len(all_new_bad)}) - will be negative examples[/red]")
+        console.print(f"\n[red]Deleted photos ({len(all_new_bad)}) - will be negative examples[/red]")
         for uuid in list(all_new_bad)[:5]:
             console.print(f"  [dim]{uuid}[/dim]")
         if len(all_new_bad) > 5:
             console.print(f"  [dim]... and {len(all_new_bad) - 5} more[/dim]")
+    
+    if pending_review:
+        console.print(f"\n[yellow]Skipping {len(pending_review)} photos still in '{album_name}' (pending review)[/yellow]")
     
     # Confirm learning
     console.print(f"\n[bold]Training update:[/bold]")
     if new_rescued:
         console.print(f"  • [green]+{len(new_rescued)} positive examples[/green] (rescued)")
     if all_new_bad:
-        console.print(f"  • [red]+{len(all_new_bad)} negative examples[/red] (bad)")
+        console.print(f"  • [red]+{len(all_new_bad)} negative examples[/red] (deleted)")
     
     response = input("\nApply feedback? [y/N]: ").strip().lower()
     if response != 'y':
         console.print("[yellow]Cancelled[/yellow]")
         return
     
-    # Update history
+    # Update history - only mark rescued and deleted, not pending
     history['rescued'].extend(list(new_rescued))
     history['confirmed_delete'].extend(list(all_new_bad))
     save_feedback_history(history)
@@ -228,7 +234,7 @@ def check_feedback(album_name: str = "To Delete"):
     
     if all_new_bad:
         add_bad_to_training(all_new_bad, added_photos)
-        console.print(f"[red]✓[/red] Added {len(all_new_bad)} bad photos as negative examples")
+        console.print(f"[red]✓[/red] Added {len(all_new_bad)} deleted photos as negative examples")
     
     console.print("\n[bold]Next steps:[/bold]")
     console.print("  1. Run [cyan]python train_model.py[/cyan] to retrain with feedback")
