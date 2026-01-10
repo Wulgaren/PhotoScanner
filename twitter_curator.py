@@ -576,6 +576,8 @@ class TwitterCurator(discord.Client):
 
 
 def main():
+    global SCORE_THRESHOLD
+    
     parser = argparse.ArgumentParser(description='Twitter image curator bot')
     parser.add_argument('--hours', type=int, default=0,
                        help='Backfill messages from the last N hours (default: 0, live only)')
@@ -586,7 +588,6 @@ def main():
     args = parser.parse_args()
     
     # Override threshold if provided via CLI
-    global SCORE_THRESHOLD
     if args.threshold is not None:
         SCORE_THRESHOLD = args.threshold
     
