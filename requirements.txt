@@ -1,7 +1,12 @@
 # Photo Scanner - AI-powered photo curation assistant
 # Core dependencies
+#
+# IMPORTANT: This project requires Python >=3.10,<3.14
+# osxmetadata>=1.4.0 (required by osxphotos) does not support Python 3.14+
+# Use Python 3.13 or earlier for compatibility
 
 # Apple Photos access
+# Note: osxmetadata is installed as a dependency of osxphotos
 osxphotos>=0.68.0
 
 # Deep Learning
@@ -24,3 +29,7 @@ rich>=13.0.0  # Beautiful terminal output
 
 # Optional: for embedding similarity
 faiss-cpu>=1.7.4  # Fast similarity search
+
+discord
+
+piexif
