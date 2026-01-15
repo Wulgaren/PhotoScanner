@@ -149,6 +149,7 @@ def extract_tweet_info(message: discord.Message) -> dict:
         'text': '',
         'tweet_url': None,
         'author': None,
+        'username': None,  # Twitter username from URL
     }
     
     # Get author from message poster's display name (TweetShift changes its name to the tweet author)
@@ -163,10 +164,11 @@ def extract_tweet_info(message: discord.Message) -> dict:
         info['text'] = message.content
         
         # Try to find Twitter/X URL
-        url_pattern = r'https?://(?:twitter\.com|x\.com)/\w+/status/\d+'
-        urls = re.findall(url_pattern, message.content)
-        if urls:
-            info['tweet_url'] = urls[0]
+        url_pattern = r'https?://(?:twitter\.com|x\.com)/(\w+)/status/\d+'
+        matches = re.findall(url_pattern, message.content)
+        if matches:
+            info['tweet_url'] = re.search(r'https?://(?:twitter\.com|x\.com)/\w+/status/\d+', message.content).group(0)
+            info['username'] = matches[0]  # Extract username from URL
     
     # Also check embeds for text
     for embed in message.embeds:
@@ -174,6 +176,10 @@ def extract_tweet_info(message: discord.Message) -> dict:
             info['text'] += '\n' + embed.description
         if embed.url and ('twitter.com' in embed.url or 'x.com' in embed.url):
             info['tweet_url'] = embed.url
+            # Extract username from embed URL
+            username_match = re.search(r'https?://(?:twitter\.com|x\.com)/(\w+)/status/\d+', embed.url)
+            if username_match:
+                info['username'] = username_match.group(1)
     
     return info
 
@@ -299,7 +305,7 @@ def add_metadata_to_image(image_data: bytes, tweet_url: str, author: str = None)
         return image_data
 
 
-def generate_filename(url: str, tweet_url: str = None, author: str = None) -> str:
+def generate_filename(url: str, tweet_url: str = None, author: str = None, username: str = None) -> str:
     """Generate a unique filename for an image."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -311,14 +317,26 @@ def generate_filename(url: str, tweet_url: str = None, author: str = None) -> st
     # Create a short hash for uniqueness
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
     
-    # Include author as first part of filename
-    author_part = ""
-    if author:
-        # Clean author name for filename
-        author_clean = re.sub(r'[^\w\-]', '', author.replace(' ', '_'))[:20]
-        author_part = f"{author_clean}_"
+    # Prefer username over display name for filename
+    # If username not available, try to extract from tweet_url
+    name_to_use = username
+    if not name_to_use and tweet_url:
+        username_match = re.search(r'https?://(?:twitter\.com|x\.com)/(\w+)/status/\d+', tweet_url)
+        if username_match:
+            name_to_use = username_match.group(1)
     
-    return f"{author_part}{timestamp}_{url_hash}{ext}"
+    # Fall back to display name if username not available
+    if not name_to_use:
+        name_to_use = author
+    
+    # Include name as first part of filename
+    name_part = ""
+    if name_to_use:
+        # Clean name for filename (username should already be clean, but just in case)
+        name_clean = re.sub(r'[^\w\-]', '', name_to_use.replace(' ', '_'))[:20]
+        name_part = f"{name_clean}_"
+    
+    return f"{name_part}{timestamp}_{url_hash}{ext}"
 
 
 class TwitterCurator(discord.Client):
@@ -445,17 +463,39 @@ class TwitterCurator(discord.Client):
         # Extract tweet info
         tweet_info = extract_tweet_info(message)
         
-        # Check for announcement
-        is_important = is_announcement(tweet_info['text'])
-        if is_important:
-            self.stats['announcements'] += 1
-            print(f"📢 ANNOUNCEMENT detected: {tweet_info['text'][:100]}...")
-        
         # Get image URLs
         image_urls = get_image_urls(message)
         
         # Get video/GIF URLs
         video_urls = get_video_urls(message)
+        
+        # If we have images/videos but no tweet URL, check the previous message
+        # (TweetShift often sends the tweet link first, then photos in a separate message)
+        if (image_urls or video_urls) and not tweet_info.get('tweet_url'):
+            try:
+                # Look at the previous message in the channel
+                async for prev_message in message.channel.history(limit=1, before=message):
+                    prev_info = extract_tweet_info(prev_message)
+                    if prev_info.get('tweet_url'):
+                        # Use tweet info from previous message
+                        tweet_info['tweet_url'] = prev_info['tweet_url']
+                        tweet_info['username'] = prev_info.get('username')
+                        # Keep the author from current message if available, otherwise use previous
+                        if not tweet_info.get('author') and prev_info.get('author'):
+                            tweet_info['author'] = prev_info['author']
+                        # Merge text if needed
+                        if prev_info.get('text') and not tweet_info.get('text'):
+                            tweet_info['text'] = prev_info['text']
+                        break
+            except Exception as e:
+                # If we can't fetch previous message, continue with what we have
+                pass
+        
+        # Check for announcement
+        is_important = is_announcement(tweet_info['text'])
+        if is_important:
+            self.stats['announcements'] += 1
+            print(f"📢 ANNOUNCEMENT detected: {tweet_info['text'][:100]}...")
         
         if not image_urls and not video_urls:
             # No media, but might be important text
@@ -481,7 +521,7 @@ class TwitterCurator(discord.Client):
         self.stats['images_seen'] += 1
         
         # Generate filename
-        filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'))
+        filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'), tweet_info.get('username'))
         
         # Add tweet URL to image metadata
         image_data_with_meta = add_metadata_to_image(
@@ -533,7 +573,7 @@ class TwitterCurator(discord.Client):
         self.stats['videos_saved'] += 1
         
         # Generate filename
-        filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'))
+        filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'), tweet_info.get('username'))
         
         # Save to videos folder
         video_path = VIDEOS_DIR / filename
