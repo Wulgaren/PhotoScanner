@@ -357,6 +357,7 @@ class TwitterCurator(discord.Client):
             'images_curated': 0,
             'announcements': 0,
             'videos_saved': 0,
+            'videos_curated': 0,
         }
     
     async def setup_hook(self):
@@ -438,7 +439,7 @@ class TwitterCurator(discord.Client):
         print(f'\n✓ Backfill complete! Processed {total_messages} messages')
         print(f'  Images seen: {self.stats["images_seen"]}')
         print(f'  Images curated: {self.stats["images_curated"]}')
-        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]}')
+        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/ + curated/)')
         print(f'  Announcements: {self.stats["announcements"]}')
         print(f'\n👀 Now listening for new messages...\n')
     
@@ -564,7 +565,7 @@ class TwitterCurator(discord.Client):
             self.log_announcement(tweet_info)
     
     async def process_video(self, url: str, tweet_info: dict):
-        """Download and save a video or GIF (no curation scoring)."""
+        """Download and save a video or GIF to videos/ and curated/."""
         # Download
         video_data = await download_image(self.session, url)  # Same download function works
         if not video_data:
@@ -578,6 +579,11 @@ class TwitterCurator(discord.Client):
         # Save to videos folder
         video_path = VIDEOS_DIR / filename
         video_path.write_bytes(video_data)
+        
+        # Also save to curated folder (videos are always included in curated)
+        curated_path = CURATED_DIR / filename
+        curated_path.write_bytes(video_data)
+        self.stats['videos_curated'] += 1
         
         print(f"🎬 VIDEO/GIF saved: {filename}")
     
@@ -657,7 +663,7 @@ def main():
         print("\n\n📊 Session Stats:")
         print(f"   Images seen: {bot.stats['images_seen']}")
         print(f"   Images curated: {bot.stats['images_curated']}")
-        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']}")
+        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/ + curated/)")
         print(f"   Announcements: {bot.stats['announcements']}")
 
 
