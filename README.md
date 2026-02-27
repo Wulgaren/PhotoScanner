@@ -149,8 +149,9 @@ Images are saved to `~/Pictures/TwitterImages/`:
 
 | Folder | Contents |
 |--------|----------|
-| `all/` | Every image from monitored channels |
-| `curated/` | Only high-scoring images (≥ threshold) |
+| `all/` | Non-curated images only (curated images stay in `curated/` only) |
+| `videos/` | All videos/GIFs (curated only when tweet text has announcement keywords) |
+| `curated/` | High-scoring images (≥ threshold) and videos whose tweet text has keywords |
 | `announcements/` | Images from tweets with announcement keywords |
 
 - Filenames include the Twitter author: `AuthorName_20260108_143022_abc123.jpg`

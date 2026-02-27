@@ -439,7 +439,7 @@ class TwitterCurator(discord.Client):
         print(f'\n✓ Backfill complete! Processed {total_messages} messages')
         print(f'  Images seen: {self.stats["images_seen"]}')
         print(f'  Images curated: {self.stats["images_curated"]}')
-        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/ + curated/)')
+        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/; curated when keywords in tweet text)')
         print(f'  Announcements: {self.stats["announcements"]}')
         print(f'\n👀 Now listening for new messages...\n')
     
@@ -531,10 +531,6 @@ class TwitterCurator(discord.Client):
             tweet_info.get('author')
         )
         
-        # Save to "all" folder
-        all_path = ALL_IMAGES_DIR / filename
-        all_path.write_bytes(image_data_with_meta)
-        
         # Check if author is in always-curate list
         author = tweet_info.get('author')
         always_curate = is_always_curate_account(author)
@@ -555,6 +551,9 @@ class TwitterCurator(discord.Client):
             else:
                 print(f"⭐ CURATED ({score:.2f}): {filename}")
         else:
+            # Save to "all" only when not curating (curated items stay only in curated/)
+            all_path = ALL_IMAGES_DIR / filename
+            all_path.write_bytes(image_data_with_meta)
             print(f"   Skipped ({score:.2f}): {filename}")
         
         # Also save to announcements if important
@@ -565,7 +564,7 @@ class TwitterCurator(discord.Client):
             self.log_announcement(tweet_info)
     
     async def process_video(self, url: str, tweet_info: dict):
-        """Download and save a video or GIF to videos/ and curated/."""
+        """Download and save a video or GIF to videos/. Copy to curated/ only if tweet text has announcement keywords."""
         # Download
         video_data = await download_image(self.session, url)  # Same download function works
         if not video_data:
@@ -576,16 +575,19 @@ class TwitterCurator(discord.Client):
         # Generate filename
         filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'), tweet_info.get('username'))
         
-        # Save to videos folder
+        # Always save to videos folder
         video_path = VIDEOS_DIR / filename
         video_path.write_bytes(video_data)
         
-        # Also save to curated folder (videos are always included in curated)
-        curated_path = CURATED_DIR / filename
-        curated_path.write_bytes(video_data)
-        self.stats['videos_curated'] += 1
-        
-        print(f"🎬 VIDEO/GIF saved: {filename}")
+        # Only put in curated/ when tweet text contains announcement keywords
+        text = tweet_info.get('text') or ''
+        if is_announcement(text):
+            self.stats['videos_curated'] += 1
+            curated_path = CURATED_DIR / filename
+            curated_path.write_bytes(video_data)
+            print(f"🎬 VIDEO/GIF saved (curated, has keywords): {filename}")
+        else:
+            print(f"🎬 VIDEO/GIF saved: {filename}")
     
     def log_announcement(self, tweet_info: dict):
         """Append announcement to the announcements.txt file."""
@@ -663,7 +665,7 @@ def main():
         print("\n\n📊 Session Stats:")
         print(f"   Images seen: {bot.stats['images_seen']}")
         print(f"   Images curated: {bot.stats['images_curated']}")
-        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/ + curated/)")
+        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/; curated when keywords in tweet text)")
         print(f"   Announcements: {bot.stats['announcements']}")
 
 
