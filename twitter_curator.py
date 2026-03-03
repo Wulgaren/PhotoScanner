@@ -439,7 +439,7 @@ class TwitterCurator(discord.Client):
         print(f'\n✓ Backfill complete! Processed {total_messages} messages')
         print(f'  Images seen: {self.stats["images_seen"]}')
         print(f'  Images curated: {self.stats["images_curated"]}')
-        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/; curated when keywords in tweet text)')
+        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/; curated when keywords or always-curate account)')
         print(f'  Announcements: {self.stats["announcements"]}')
         print(f'\n👀 Now listening for new messages...\n')
     
@@ -508,7 +508,7 @@ class TwitterCurator(discord.Client):
         for url in image_urls:
             await self.process_image(url, tweet_info, is_important, message)
         
-        # Process each video/GIF (no curation, just save)
+        # Process each video/GIF (curated when keywords or always-curate account, same as images)
         for url in video_urls:
             await self.process_video(url, tweet_info)
     
@@ -564,7 +564,7 @@ class TwitterCurator(discord.Client):
             self.log_announcement(tweet_info)
     
     async def process_video(self, url: str, tweet_info: dict):
-        """Download and save a video or GIF to videos/. Copy to curated/ only if tweet text has announcement keywords."""
+        """Download and save a video or GIF to videos/. Copy to curated/ when tweet has announcement keywords or author is in always-curate list (same rules as images)."""
         # Download
         video_data = await download_image(self.session, url)  # Same download function works
         if not video_data:
@@ -579,13 +579,18 @@ class TwitterCurator(discord.Client):
         video_path = VIDEOS_DIR / filename
         video_path.write_bytes(video_data)
         
-        # Only put in curated/ when tweet text contains announcement keywords
+        # Put in curated/ when tweet text has announcement keywords OR author is in always-curate list (same rules as images)
         text = tweet_info.get('text') or ''
-        if is_announcement(text):
+        author = tweet_info.get('author')
+        should_curate = is_announcement(text) or is_always_curate_account(author)
+        if should_curate:
             self.stats['videos_curated'] += 1
             curated_path = CURATED_DIR / filename
             curated_path.write_bytes(video_data)
-            print(f"🎬 VIDEO/GIF saved (curated, has keywords): {filename}")
+            if is_always_curate_account(author):
+                print(f"🎬 VIDEO/GIF saved (curated, always: {author}): {filename}")
+            else:
+                print(f"🎬 VIDEO/GIF saved (curated, has keywords): {filename}")
         else:
             print(f"🎬 VIDEO/GIF saved: {filename}")
     
@@ -608,13 +613,22 @@ class TwitterCurator(discord.Client):
         # Clean up extra whitespace
         text = re.sub(r'\s+', ' ', text).strip()
         
-        line = f"[{timestamp}] {author}: {text}"
+        lines = [
+            "",
+            "---",
+            f"Date: {timestamp}",
+            f"From: {author}",
+        ]
         if tweet_url:
-            line += f"\n→ {tweet_url}"
-        line += "\n\n"  # Blank line between announcements
+            lines.append(f"Link: {tweet_url}")
+        lines.extend([
+            "",
+            text,
+            "",
+        ])
         
         with open(announcements_file, 'a') as f:
-            f.write(line)
+            f.write("\n".join(lines))
     
     async def save_announcement(self, tweet_info: dict, message: discord.Message):
         """Save an important announcement (text only, no images)."""
@@ -665,7 +679,7 @@ def main():
         print("\n\n📊 Session Stats:")
         print(f"   Images seen: {bot.stats['images_seen']}")
         print(f"   Images curated: {bot.stats['images_curated']}")
-        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/; curated when keywords in tweet text)")
+        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/; curated when keywords or always-curate account)")
         print(f"   Announcements: {bot.stats['announcements']}")
 
 
