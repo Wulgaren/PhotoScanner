@@ -439,7 +439,7 @@ class TwitterCurator(discord.Client):
         print(f'\n✓ Backfill complete! Processed {total_messages} messages')
         print(f'  Images seen: {self.stats["images_seen"]}')
         print(f'  Images curated: {self.stats["images_curated"]}')
-        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} (to videos/; curated when keywords or always-curate account)')
+        print(f'  Videos/GIFs saved: {self.stats["videos_saved"]} to videos/ (curated ones go only to curated/, skipped in videos/)')
         print(f'  Announcements: {self.stats["announcements"]}')
         print(f'\n👀 Now listening for new messages...\n')
     
@@ -564,26 +564,20 @@ class TwitterCurator(discord.Client):
             self.log_announcement(tweet_info)
     
     async def process_video(self, url: str, tweet_info: dict):
-        """Download and save a video or GIF to videos/. Copy to curated/ when tweet has announcement keywords or author is in always-curate list (same rules as images)."""
+        """Download and save a video or GIF. Curated videos go only to curated/; others go only to videos/ (same skip-in-folder rule as images vs all/)."""
         # Download
         video_data = await download_image(self.session, url)  # Same download function works
         if not video_data:
             return
         
-        self.stats['videos_saved'] += 1
-        
         # Generate filename
         filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'), tweet_info.get('username'))
-        
-        # Always save to videos folder
-        video_path = VIDEOS_DIR / filename
-        video_path.write_bytes(video_data)
-        
-        # Put in curated/ when tweet text has announcement keywords OR author is in always-curate list (same rules as images)
         text = tweet_info.get('text') or ''
         author = tweet_info.get('author')
         should_curate = is_announcement(text) or is_always_curate_account(author)
+
         if should_curate:
+            # Curated: save only to curated/, skip videos/
             self.stats['videos_curated'] += 1
             curated_path = CURATED_DIR / filename
             curated_path.write_bytes(video_data)
@@ -592,6 +586,10 @@ class TwitterCurator(discord.Client):
             else:
                 print(f"🎬 VIDEO/GIF saved (curated, has keywords): {filename}")
         else:
+            # Non-curated: save only to videos/
+            self.stats['videos_saved'] += 1
+            video_path = VIDEOS_DIR / filename
+            video_path.write_bytes(video_data)
             print(f"🎬 VIDEO/GIF saved: {filename}")
     
     def log_announcement(self, tweet_info: dict):
@@ -679,7 +677,7 @@ def main():
         print("\n\n📊 Session Stats:")
         print(f"   Images seen: {bot.stats['images_seen']}")
         print(f"   Images curated: {bot.stats['images_curated']}")
-        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} (to videos/; curated when keywords or always-curate account)")
+        print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} to videos/ (curated only in curated/, skipped in videos/)")
         print(f"   Announcements: {bot.stats['announcements']}")
 
 

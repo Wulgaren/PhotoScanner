@@ -150,7 +150,7 @@ Images are saved to `~/Pictures/TwitterImages/`:
 | Folder | Contents |
 |--------|----------|
 | `all/` | Non-curated images only (curated images stay in `curated/` only) |
-| `videos/` | All videos/GIFs (curated only when tweet text has announcement keywords) |
+| `videos/` | Non-curated videos/GIFs only (curated videos stay in `curated/` only) |
 | `curated/` | High-scoring images (≥ threshold) and videos whose tweet text has keywords |
 | `announcements/` | Images from tweets with announcement keywords |
 
