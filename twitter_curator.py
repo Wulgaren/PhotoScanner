@@ -670,7 +670,7 @@ def main():
         return
     
     bot = TwitterCurator(backfill_hours=args.hours, exit_after_backfill=args.no_listen)
-    
+
     try:
         bot.run(DISCORD_TOKEN)
     except KeyboardInterrupt:
@@ -679,6 +679,10 @@ def main():
         print(f"   Images curated: {bot.stats['images_curated']}")
         print(f"   Videos/GIFs saved: {bot.stats['videos_saved']} to videos/ (curated only in curated/, skipped in videos/)")
         print(f"   Announcements: {bot.stats['announcements']}")
+    finally:
+        from summarize_announcements import write_announcements_summary
+
+        write_announcements_summary(ANNOUNCEMENTS_DIR / "announcements.txt")
 
 
 if __name__ == '__main__':

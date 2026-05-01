@@ -157,6 +157,16 @@ Images are saved to `~/Pictures/TwitterImages/`:
 - Filenames include the Twitter author: `AuthorName_20260108_143022_abc123.jpg`
 - Tweet URL is embedded in image EXIF metadata
 - `announcements/announcements.txt` logs important tweets
+- `announcements/announcements_summary.txt` is written when the bot exits, if you have built the Swift helper (macOS + Apple Intelligence). Same step can be run by hand: `python summarize_announcements.py`
+
+```bash
+cd tools/AnnouncementsSummarizer && swift build -c release
+# optional manual run: python summarize_announcements.py
+# or: python summarize_announcements.py --path /path/to/announcements.txt
+# dry-run: python summarize_announcements.py --dry-run
+```
+
+Uses Apple’s Foundation Models framework; on-device vs Private Cloud compute is chosen by the system, not the app.
 
 ---
 
@@ -185,6 +195,7 @@ Images are saved to `~/Pictures/TwitterImages/`:
 | `interactive_review.py` | Interactively review suggestions |
 | `learn_from_feedback.py` | Learn from your sorting decisions |
 | `twitter_curator.py` | Discord bot for Twitter image curation |
+| `summarize_announcements.py` | Optional: write `announcements_summary.txt` (also runs at bot exit on Mac) |
 | `config.json` | Configuration (Discord token, channels, etc.) |
 
 ## Tips
