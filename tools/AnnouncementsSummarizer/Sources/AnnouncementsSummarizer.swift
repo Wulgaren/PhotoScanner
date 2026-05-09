@@ -37,7 +37,9 @@ enum AnnouncementsSummarizer {
         let raw = String(data: data, encoding: .utf8)
             ?? String(decoding: data, as: UTF8.self)
 
-        let model = SystemLanguageModel.default
+        // Permissive guardrails: default guardrails often false-positive on noisy social/creator
+        // text and throw guardrailViolation. See SystemLanguageModel.Guardrails in FoundationModels.
+        let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
         if model.availability != .available {
             FileHandle.standardError.write(
                 Data(
@@ -48,13 +50,15 @@ enum AnnouncementsSummarizer {
             exit(1)
         }
 
-        let summary = try await summarizeLongText(raw)
+        let summary = try await summarizeLongText(raw, model: model)
         print(summary, terminator: "")
     }
 
-    private static func summarizeLongText(_ text: String) async throws -> String {
+    private static func summarizeLongText(_ text: String, model: SystemLanguageModel) async throws
+        -> String
+    {
         if text.count <= maxChunkChars {
-            return try await summarizeChunk(text)
+            return try await summarizeChunk(text, model: model)
         }
 
         // Split on announcement separators first, then by size.
@@ -80,22 +84,24 @@ enum AnnouncementsSummarizer {
             }
         }
 
-        if pieces.isEmpty { return try await summarizeChunk(text) }
-        if pieces.count == 1 { return try await summarizeChunk(pieces[0]) }
+        if pieces.isEmpty { return try await summarizeChunk(text, model: model) }
+        if pieces.count == 1 { return try await summarizeChunk(pieces[0], model: model) }
 
         var partSummaries: [String] = []
         for (i, p) in pieces.enumerated() {
             let s = try await summarizeChunk(
                 p,
+                model: model,
                 instructionExtra: "This is part \(i + 1) of \(pieces.count) of a longer log. Capture names, dates, and product facts."
             )
             partSummaries.append(s)
         }
-        return try await mergePartSummaries(partSummaries)
+        return try await mergePartSummaries(partSummaries, model: model)
     }
 
     private static func summarizeChunk(
         _ text: String,
+        model: SystemLanguageModel,
         instructionExtra: String = ""
     ) async throws -> String {
         let extra = instructionExtra.isEmpty ? "" : " \(instructionExtra)"
@@ -103,21 +109,23 @@ enum AnnouncementsSummarizer {
         You condense long announcement logs for quick scanning. Use markdown: short bullets, optional ## headings. \
         Keep proper nouns, version numbers, and dates. No preamble or closing remarks.\(extra)
         """
-        let session = LanguageModelSession(instructions: instructions)
+        let session = LanguageModelSession(model: model, instructions: instructions)
         let prompt = """
         Summarize this text (announcements from social/creator feeds, possibly noisy):
 
         \(text)
         """
-        return try await respondString(session, prompt: prompt)
+        return try await respondString(session, model: model, prompt: prompt)
     }
 
-    private static func mergePartSummaries(_ parts: [String]) async throws -> String {
+    private static func mergePartSummaries(_ parts: [String], model: SystemLanguageModel) async throws
+        -> String
+    {
         let instructions = """
         You merge several partial summaries of the same running announcement log. \
         Deduplicate repeated facts. One coherent markdown output (bullets and ## as needed). No preamble.
         """
-        let session = LanguageModelSession(instructions: instructions)
+        let session = LanguageModelSession(model: model, instructions: instructions)
         let joined = parts.enumerated()
             .map { idx, s in
                 "### Part \(idx + 1)\n\n\(s)"
@@ -128,12 +136,14 @@ enum AnnouncementsSummarizer {
 
         \(joined)
         """
-        return try await respondString(session, prompt: prompt)
+        return try await respondString(session, model: model, prompt: prompt)
     }
 
-    private static func respondString(_ session: LanguageModelSession, prompt: String) async throws
-        -> String
-    {
+    private static func respondString(
+        _ session: LanguageModelSession,
+        model: SystemLanguageModel,
+        prompt: String
+    ) async throws -> String {
         do {
             let response = try await session.respond(to: prompt)
             return String(describing: response.content)
@@ -144,9 +154,17 @@ enum AnnouncementsSummarizer {
                 let i = prompt.index(prompt.startIndex, offsetBy: half)
                 let a = String(prompt[..<i])
                 let b = String(prompt[i...])
-                let s1 = try await summarizeChunk(a, instructionExtra: "Fragment A of oversized chunk.")
-                let s2 = try await summarizeChunk(b, instructionExtra: "Fragment B of oversized chunk.")
-                return try await mergePartSummaries([s1, s2])
+                let s1 = try await summarizeChunk(
+                    a,
+                    model: model,
+                    instructionExtra: "Fragment A of oversized chunk."
+                )
+                let s2 = try await summarizeChunk(
+                    b,
+                    model: model,
+                    instructionExtra: "Fragment B of oversized chunk."
+                )
+                return try await mergePartSummaries([s1, s2], model: model)
             }
             throw error
         }
