@@ -135,12 +135,17 @@ def is_announcement(text: str) -> bool:
     return any(keyword in text_lower for keyword in ANNOUNCEMENT_KEYWORDS)
 
 
-def is_always_curate_account(author: str) -> bool:
-    """Check if author matches any always-curate account keywords."""
-    if not author or not ALWAYS_CURATE_ACCOUNTS:
+def is_always_curate_account(author: str, username: str = None) -> bool:
+    """Check if author display name or username matches any always-curate account keywords."""
+    if not ALWAYS_CURATE_ACCOUNTS:
         return False
-    author_lower = author.lower()
-    return any(keyword.lower() in author_lower for keyword in ALWAYS_CURATE_ACCOUNTS)
+    for keyword in ALWAYS_CURATE_ACCOUNTS:
+        kw = keyword.lower()
+        if author and kw in author.lower():
+            return True
+        if username and kw in username.lower():
+            return True
+    return False
 
 
 def extract_tweet_info(message: discord.Message) -> dict:
@@ -533,7 +538,8 @@ class TwitterCurator(discord.Client):
         
         # Check if author is in always-curate list
         author = tweet_info.get('author')
-        always_curate = is_always_curate_account(author)
+        username = tweet_info.get('username')
+        always_curate = is_always_curate_account(author, username)
         
         # Score image (use original data for scoring) - skip if always curating
         if always_curate:
@@ -574,7 +580,8 @@ class TwitterCurator(discord.Client):
         filename = generate_filename(url, tweet_info.get('tweet_url'), tweet_info.get('author'), tweet_info.get('username'))
         text = tweet_info.get('text') or ''
         author = tweet_info.get('author')
-        should_curate = is_announcement(text) or is_always_curate_account(author)
+        username = tweet_info.get('username')
+        should_curate = is_announcement(text) or is_always_curate_account(author, username)
 
         if should_curate:
             # Curated: save only to curated/, skip videos/
