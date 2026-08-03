@@ -6,40 +6,15 @@ Move photos below a score threshold to a 'To Delete' album in Apple Photos.
 import json
 import subprocess
 from pathlib import Path
-from datetime import datetime
 import argparse
 from rich.console import Console
 from rich.progress import track
 
+from learn_from_feedback import record_added_photos
+
 console = Console()
 
 OUTPUT_DIR = Path(__file__).parent / 'output'
-CACHE_DIR = Path(__file__).parent / '.cache'
-FEEDBACK_FILE = CACHE_DIR / 'feedback_history.json'
-
-
-def record_added_photos(uuids: list, scan_file: str):
-    """Record that these photos were added to To Delete album for feedback tracking."""
-    # Load existing history
-    history = {'added_to_album': {}, 'rescued': [], 'confirmed_delete': []}
-    if FEEDBACK_FILE.exists():
-        with open(FEEDBACK_FILE) as f:
-            history = json.load(f)
-    
-    timestamp = datetime.now().isoformat()
-    
-    for uuid in uuids:
-        if uuid not in history['added_to_album']:
-            history['added_to_album'][uuid] = {
-                'added_date': timestamp,
-                'scan_file': scan_file,
-            }
-    
-    CACHE_DIR.mkdir(exist_ok=True)
-    with open(FEEDBACK_FILE, 'w') as f:
-        json.dump(history, f, indent=2, default=str)
-    
-    console.print(f"[dim]Recorded {len(uuids)} photos for feedback tracking[/dim]")
 
 
 def add_photos_to_album(uuids: list, album_name: str, batch_size: int = 50) -> int:

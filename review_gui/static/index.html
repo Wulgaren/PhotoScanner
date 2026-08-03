@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PhotoScanner Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="brand-name">PhotoScanner</span>
+      <span class="brand-sub">stack review</span>
+    </div>
+    <div class="meta" id="meta">
+      <span id="threshold-pill">T —</span>
+      <span id="progress-pill">— / —</span>
+      <span id="delete-pill">0 marked</span>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-undo" class="ghost" disabled title="Undo (u)">Undo</button>
+      <button type="button" id="btn-finish" class="ghost" title="Finish session">Done</button>
+    </div>
+  </header>
+
+  <p class="hint" id="hint">
+    <kbd>←</kbd><kbd>→</kbd> photo · <kbd>Space</kbd> toggle · <kbd>Enter</kbd> commit · <kbd>s</kbd> mark keep all · <kbd>d</kbd> mark delete all · <kbd>u</kbd> undo · right-click Photos · dbl-click Preview
+  </p>
+
+  <main id="boards" class="boards" aria-live="polite"></main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h2 id="modal-title">Tier complete</h2>
+      <p id="modal-body"></p>
+      <div class="modal-actions">
+        <button type="button" id="modal-secondary" class="ghost">Finish</button>
+        <button type="button" id="modal-primary" class="primary">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

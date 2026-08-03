@@ -269,6 +269,8 @@ def interactive_review(results_file: str = None):
             success = add_photos_to_album(uuids, "To Delete")
             
             if success:
+                from learn_from_feedback import record_added_photos
+                record_added_photos(uuids, results_file or "interactive_review")
                 console.print(f"\n[green]✓[/green] Added {len(uuids)} photos to 'To Delete' album")
                 console.print("[dim]Open Photos app and review the 'To Delete' album, then select all and delete[/dim]")
             else:

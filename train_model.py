@@ -96,26 +96,28 @@ def get_bad_photo_paths():
 def get_rescued_photo_uuids():
     """Get UUIDs of photos that were rescued (user marked as good via feedback)."""
     if not RESCUED_PHOTOS_FILE.exists():
-        return []
+        return set()
     
     try:
         with open(RESCUED_PHOTOS_FILE) as f:
-            return json.load(f)
+            from learn_from_feedback import normalize_uuid_set
+            return normalize_uuid_set(json.load(f))
     except Exception:
-        return []
+        return set()
 
 
 def get_feedback_bad_photo_uuids():
     """Get UUIDs of photos marked as bad via feedback."""
     bad_file = CACHE_DIR / 'feedback_bad_photos.json'
     if not bad_file.exists():
-        return []
+        return set()
     
     try:
         with open(bad_file) as f:
-            return json.load(f)
+            from learn_from_feedback import normalize_uuid_set
+            return normalize_uuid_set(json.load(f))
     except Exception:
-        return []
+        return set()
 
 
 def load_feature_cache():
@@ -199,17 +201,22 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
     
     # Add rescued photos to good examples
     if has_rescued:
-        rescued_photos = [p for p in all_photos if p.uuid in rescued_uuids]
+        from learn_from_feedback import normalize_uuid
+        rescued_photos = [p for p in all_photos if normalize_uuid(p.uuid) in rescued_uuids]
         # Filter out any already in good_photos
-        existing_uuids = {p.uuid for p in good_photos}
-        new_rescued = [p for p in rescued_photos if p.uuid not in existing_uuids]
+        existing_uuids = {normalize_uuid(p.uuid) for p in good_photos}
+        new_rescued = [p for p in rescued_photos if normalize_uuid(p.uuid) not in existing_uuids]
         good_photos.extend(new_rescued)
         console.print(f"[green]✓[/green] Added {len(new_rescued)} rescued photos to training")
     
     # Get feedback bad photos from Photos library
     feedback_bad_photos = []
     if has_feedback_bad:
-        feedback_bad_photos = [p for p in all_photos if p.uuid in feedback_bad_uuids and not p.ismissing]
+        from learn_from_feedback import normalize_uuid
+        feedback_bad_photos = [
+            p for p in all_photos
+            if normalize_uuid(p.uuid) in feedback_bad_uuids and not p.ismissing
+        ]
         console.print(f"[red]✓[/red] Found {len(feedback_bad_photos)} feedback bad photos in library")
     
     # Sample if needed

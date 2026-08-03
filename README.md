@@ -52,7 +52,25 @@ python scan_photos.py --after 2023-11-18 --threshold 0.8
 
 ### 3. Review and delete
 
-**Option A: Move to album (recommended)**
+**Option A: Multi-stack browser review (recommended for large libraries)**
+
+```bash
+python review_gui.py
+python review_gui.py --threshold 0.5 --port 8765
+```
+
+Opens a local UI with up to 3 series rows (photos left-to-right). Model suggestions are pre-marked for deletion.
+
+Keys:
+- `←` / `→` — focus stack
+- `1`–`9` — toggle delete/keep on that photo (best is locked)
+- `Enter` — commit focused stack
+- `n` — keep all in focused stack
+- `u` — undo last commit
+
+When a threshold tier is empty, you are prompted to raise it by **+0.1** (more candidates). Progress auto-saves to `output/review_session.json` (resume on relaunch). Finish writes `confirmed_delete_*.txt` and can add UUIDs to the Photos “To Delete” album.
+
+**Option B: Move to album**
 
 ```bash
 # Move low-scoring photos to "To Delete" album in Photos app
@@ -64,7 +82,7 @@ python move_to_album.py --threshold 0.8 --dry-run
 
 Then open Photos app → "To Delete" album → review → delete what you don't want.
 
-**Option B: Interactive review**
+**Option C: Interactive CLI review**
 
 ```bash
 python interactive_review.py

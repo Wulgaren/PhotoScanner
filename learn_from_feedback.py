@@ -19,8 +19,23 @@ CACHE_DIR = Path(__file__).parent / '.cache'
 FEEDBACK_FILE = CACHE_DIR / 'feedback_history.json'
 
 
+def normalize_uuid(uuid) -> str:
+    """
+    Normalize Photos UUIDs for comparison.
+    AppleScript often returns ids like 'UUID/L0/001'; history/scan use bare UUID.
+    """
+    if not uuid:
+        return ""
+    return str(uuid).strip().split("/", 1)[0].upper()
+
+
+def normalize_uuid_set(uuids) -> set:
+    """Normalize an iterable of UUIDs, dropping empties."""
+    return {normalize_uuid(u) for u in uuids if normalize_uuid(u)}
+
+
 def get_album_photo_uuids(album_name: str) -> set:
-    """Get all photo UUIDs currently in an album."""
+    """Get all photo UUIDs currently in an album (normalized bare form)."""
     script = f'''
     tell application "Photos"
         if not (exists album "{album_name}") then
@@ -44,7 +59,7 @@ def get_album_photo_uuids(album_name: str) -> set:
         uuid_text = result.stdout.strip()
         if not uuid_text:
             return set()
-        return set(uuid_text.split(','))
+        return normalize_uuid_set(uuid_text.split(','))
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Error reading album: {e.stderr}[/red]")
         return set()
@@ -53,20 +68,24 @@ def get_album_photo_uuids(album_name: str) -> set:
 def check_photos_exist(uuids: list) -> tuple[set, set]:
     """
     Check which photos still exist in the library.
-    Returns (existing_uuids, deleted_uuids)
+    Returns (existing_uuids, deleted_uuids) with normalized bare UUIDs.
     """
     if not uuids:
         return set(), set()
-    
+
+    normalized = [normalize_uuid(u) for u in uuids]
+    normalized = [u for u in normalized if u]
+    if not normalized:
+        return set(), set()
+
     existing = set()
-    deleted = set()
-    
+
     # Check in batches to avoid AppleScript limits
     batch_size = 50
-    for i in range(0, len(uuids), batch_size):
-        batch = uuids[i:i + batch_size]
+    for i in range(0, len(normalized), batch_size):
+        batch = normalized[i:i + batch_size]
         uuid_list = ', '.join(f'"{uuid}"' for uuid in batch)
-        
+
         script = f'''
         tell application "Photos"
             set uuidList to {{{uuid_list}}}
@@ -81,7 +100,7 @@ def check_photos_exist(uuids: list) -> tuple[set, set]:
             return existingList as text
         end tell
         '''
-        
+
         try:
             result = subprocess.run(
                 ['osascript', '-e', script],
@@ -89,12 +108,12 @@ def check_photos_exist(uuids: list) -> tuple[set, set]:
             )
             existing_text = result.stdout.strip()
             if existing_text:
-                batch_existing = set(existing_text.split(','))
-                existing.update(batch_existing)
+                existing.update(normalize_uuid_set(existing_text.split(',')))
         except subprocess.CalledProcessError:
             pass  # If error, assume none exist
-    
-    deleted = set(uuids) - existing
+
+    wanted = set(normalized)
+    deleted = wanted - existing
     return existing, deleted
 
 
@@ -119,8 +138,11 @@ def record_added_photos(uuids: list, scan_file: str):
     timestamp = datetime.now().isoformat()
     
     for uuid in uuids:
-        if uuid not in history['added_to_album']:
-            history['added_to_album'][uuid] = {
+        key = normalize_uuid(uuid)
+        if not key:
+            continue
+        if key not in history['added_to_album']:
+            history['added_to_album'][key] = {
                 'added_date': timestamp,
                 'scan_file': scan_file,
             }
@@ -147,19 +169,18 @@ def check_feedback(album_name: str = "To Delete"):
     
     console.print(f"Photos previously added to '{album_name}': {len(added_photos)}")
     
-    # Get current photos in album
+    # Get current photos in album (normalized)
     console.print(f"Checking current '{album_name}' album...")
     current_in_album = get_album_photo_uuids(album_name)
     console.print(f"Photos currently in album: {len(current_in_album)}")
     
-    # Find photos no longer in album
-    added_uuids = set(added_photos.keys())
+    # Normalize history keys so AppleScript '/L0/001' ids match scan UUIDs
+    added_uuids = normalize_uuid_set(added_photos.keys())
     not_in_album = added_uuids - current_in_album
     still_in_album = added_uuids & current_in_album
     
-    # Check which of those still exist in the library (rescued) vs deleted
-    previously_rescued = set(history.get('rescued', []))
-    previously_deleted = set(history.get('confirmed_delete', []))
+    previously_rescued = normalize_uuid_set(history.get('rescued', []))
+    previously_deleted = normalize_uuid_set(history.get('confirmed_delete', []))
     
     # Only check photos we haven't processed before
     to_check = not_in_album - previously_rescued - previously_deleted
@@ -222,9 +243,9 @@ def check_feedback(album_name: str = "To Delete"):
         console.print("[yellow]Cancelled[/yellow]")
         return
     
-    # Update history - only mark rescued and deleted, not pending
-    history['rescued'].extend(list(new_rescued))
-    history['confirmed_delete'].extend(list(all_new_bad))
+    # Update history - only mark rescued and deleted, not pending (store bare UUIDs)
+    history['rescued'].extend(sorted(new_rescued))
+    history['confirmed_delete'].extend(sorted(all_new_bad))
     save_feedback_history(history)
     
     # Save for training
@@ -251,10 +272,12 @@ def add_rescued_to_training(rescued_uuids: set, added_photos: dict):
         with open(rescued_file) as f:
             existing_rescued = json.load(f)
     
-    # Add new rescued UUIDs
+    existing_norm = normalize_uuid_set(existing_rescued)
     for uuid in rescued_uuids:
-        if uuid not in existing_rescued:
-            existing_rescued.append(uuid)
+        key = normalize_uuid(uuid)
+        if key and key not in existing_norm:
+            existing_rescued.append(key)
+            existing_norm.add(key)
     
     with open(rescued_file, 'w') as f:
         json.dump(existing_rescued, f, indent=2)
@@ -272,10 +295,12 @@ def add_bad_to_training(bad_uuids: set, added_photos: dict):
         with open(bad_file) as f:
             existing_bad = json.load(f)
     
-    # Add new bad UUIDs
+    existing_norm = normalize_uuid_set(existing_bad)
     for uuid in bad_uuids:
-        if uuid not in existing_bad:
-            existing_bad.append(uuid)
+        key = normalize_uuid(uuid)
+        if key and key not in existing_norm:
+            existing_bad.append(key)
+            existing_norm.add(key)
     
     with open(bad_file, 'w') as f:
         json.dump(existing_bad, f, indent=2)
