@@ -262,8 +262,8 @@ def check_feedback(album_name: str = "To Delete"):
     console.print("  2. Run [cyan]python scan_photos.py[/cyan] to rescan with improved model")
 
 
-def add_rescued_to_training(rescued_uuids: set, added_photos: dict):
-    """Add rescued photos to the positive training examples."""
+def add_rescued_to_training(rescued_uuids: set, added_photos: dict = None):
+    """Add rescued photos to the positive training examples. Returns count newly added."""
     
     # Save rescued UUIDs for training to pick up
     rescued_file = CACHE_DIR / 'rescued_photos.json'
@@ -273,16 +273,40 @@ def add_rescued_to_training(rescued_uuids: set, added_photos: dict):
             existing_rescued = json.load(f)
     
     existing_norm = normalize_uuid_set(existing_rescued)
+    added = 0
     for uuid in rescued_uuids:
         key = normalize_uuid(uuid)
         if key and key not in existing_norm:
             existing_rescued.append(key)
             existing_norm.add(key)
+            added += 1
     
     with open(rescued_file, 'w') as f:
         json.dump(existing_rescued, f, indent=2)
     
     console.print(f"[dim]Saved {len(existing_rescued)} total rescued photos for training[/dim]")
+    return added
+
+
+def record_review_kept(uuids) -> int:
+    """
+    Persist review-kept UUIDs for training and feedback history.
+    Returns number of newly added training positives.
+    """
+    keys = normalize_uuid_set(uuids)
+    if not keys:
+        return 0
+
+    added = add_rescued_to_training(keys)
+
+    history = load_feedback_history()
+    existing = normalize_uuid_set(history.get("rescued", []))
+    history.setdefault("rescued", [])
+    for key in sorted(keys - existing):
+        history["rescued"].append(key)
+    save_feedback_history(history)
+
+    return added
 
 
 def add_bad_to_training(bad_uuids: set, added_photos: dict):

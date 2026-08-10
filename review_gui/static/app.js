@@ -427,6 +427,12 @@
       `Marked for deletion: ${r.confirmed_delete_count || 0}`,
       r.output_file ? `Saved: ${r.output_file}` : "No deletions to save.",
     ];
+    if (r.kept_count != null) {
+      lines.push(
+        `Kept saved for training: ${r.kept_saved != null ? r.kept_saved : r.kept_count}` +
+          (r.kept_count != null ? ` (of ${r.kept_count})` : "")
+      );
+    }
     if (addToAlbum) {
       lines.push(
         r.album_added

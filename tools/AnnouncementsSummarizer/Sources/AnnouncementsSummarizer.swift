@@ -92,7 +92,7 @@ enum AnnouncementsSummarizer {
             let s = try await summarizeChunk(
                 p,
                 model: model,
-                instructionExtra: "This is part \(i + 1) of \(pieces.count) of a longer log. Capture names, dates, and product facts."
+                instructionExtra: "This is part \(i + 1) of \(pieces.count). Keep lines short; names + event/product + date only."
             )
             partSummaries.append(s)
         }
@@ -106,12 +106,16 @@ enum AnnouncementsSummarizer {
     ) async throws -> String {
         let extra = instructionExtra.isEmpty ? "" : " \(instructionExtra)"
         let instructions = """
-        You condense long announcement logs for quick scanning. Use markdown: short bullets, optional ## headings. \
-        Keep proper nouns, version numbers, and dates. No preamble or closing remarks.\(extra)
+        You write ultra-short announcement digests. Plain text only: no markdown, no headings, \
+        no bold, no links, no hashtags. One line per distinct announcement, format: \
+        "- Artist: brief what (date)". Max ~12 words after the artist. \
+        Keep only who / what product-or-event / when. Drop: URLs, hashtags, sources, sentiment, \
+        jacket specs, track lists, nested product breakdowns, poster counts, ticket sale fluff, \
+        campaign slogans, "additional content" dumps. No preamble or closing remarks.\(extra)
         """
         let session = LanguageModelSession(model: model, instructions: instructions)
         let prompt = """
-        Summarize this text (announcements from social/creator feeds, possibly noisy):
+        One plain-text line per announcement (who / what / when only):
 
         \(text)
         """
@@ -122,17 +126,19 @@ enum AnnouncementsSummarizer {
         -> String
     {
         let instructions = """
-        You merge several partial summaries of the same running announcement log. \
-        Deduplicate repeated facts. One coherent markdown output (bullets and ## as needed). No preamble.
+        You merge partial announcement digests into one plain-text list. Deduplicate. \
+        No markdown, no headings, no bold, no links, no hashtags. \
+        One short line per item: "- Artist: brief what (date)". Max ~12 words after the artist. \
+        Drop everything except who / what / when. No preamble.
         """
         let session = LanguageModelSession(model: model, instructions: instructions)
         let joined = parts.enumerated()
             .map { idx, s in
-                "### Part \(idx + 1)\n\n\(s)"
+                "Part \(idx + 1):\n\(s)"
             }
             .joined(separator: "\n\n")
         let prompt = """
-        Merge and deduplicate into one skimmable summary:
+        Merge into one plain-text who/what/when list:
 
         \(joined)
         """

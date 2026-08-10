@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 from rich.console import Console
 
 from interactive_review import add_photos_to_album, open_in_preview
-from learn_from_feedback import record_added_photos
+from learn_from_feedback import normalize_uuid, record_added_photos, record_review_kept
 
 console = Console()
 
@@ -424,6 +424,28 @@ class ReviewState:
             self.save_session()
             return {"ok": True, "state": self._unlocked_public_state()}
 
+    def kept_photos(self) -> list[dict]:
+        """Photos in decided series that were not marked for deletion."""
+        delete_uuids = set()
+        delete_paths = set()
+        for d in self.confirmed_delete:
+            uid = normalize_uuid(d.get("uuid"))
+            if uid:
+                delete_uuids.add(uid)
+            if d.get("path"):
+                delete_paths.add(d["path"])
+
+        kept: list[dict] = []
+        for sid in self.decided:
+            for p in self.photos_by_series.get(sid, []):
+                uid = normalize_uuid(p.get("uuid"))
+                if uid and uid in delete_uuids:
+                    continue
+                if p.get("path") and p["path"] in delete_paths:
+                    continue
+                kept.append(p)
+        return kept
+
     def finish(self, add_to_album: bool = False) -> dict:
         with self._lock:
             if self.finished and self.finish_result:
@@ -458,11 +480,17 @@ class ReviewState:
                     if album_added:
                         record_added_photos(uuids, self.results_path)
 
+            kept = self.kept_photos()
+            kept_uuids = [p["uuid"] for p in kept if p.get("uuid")]
+            kept_saved = record_review_kept(kept_uuids) if kept_uuids else 0
+
             result = {
                 "confirmed_delete_count": len(self.confirmed_delete),
                 "output_file": str(out_file) if out_file else None,
                 "album_added": album_added,
                 "album_count": album_count,
+                "kept_count": len(kept_uuids),
+                "kept_saved": kept_saved,
             }
             self.finished = True
             self.finish_result = result
