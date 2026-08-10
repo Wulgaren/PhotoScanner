@@ -68,15 +68,25 @@ def main() -> None:
 
     console.print(f"Session: [cyan]{SESSION_FILE}[/cyan]")
     console.print(f"Results: [cyan]{results_path}[/cyan]")
-    console.print(f"Decided series: {len(session.get('decided', []))}")
+    console.print(f"Mode: [cyan]{session.get('mode', 'grouped')}[/cyan]")
+    console.print(f"Decided units: {len(session.get('decided', []))}")
     console.print(f"Marked delete: {len(session.get('confirmed_delete', []))}")
 
     with open(results_path) as f:
         results = json.load(f)
 
     threshold = float(session.get("threshold", 0.5))
+    mode = session.get("mode") or "grouped"
+    page_size = int(session.get("page_size") or 3)
     library_uuids = load_photos_library_uuids()
-    state = ReviewState(results, results_path, threshold, library_uuids=library_uuids)
+    state = ReviewState(
+        results,
+        results_path,
+        threshold,
+        mode=mode,
+        page_size=page_size,
+        library_uuids=library_uuids,
+    )
 
     if state.finished:
         console.print("[yellow]Session finished while loading (unexpected).[/yellow]")

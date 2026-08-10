@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Multi-stack browser review UI for photo deletion suggestions.
-Shows up to 5 series at once; keyboard-first commit with progressive thresholds.
+Browser review UI for photo deletion suggestions.
+
+Modes:
+  flat    — all score < threshold, worst-first, paginated (--page-size)
+  grouped — one similar-photo series per screen (best kept, others culled)
+
+Keyboard-first commit; at end of a threshold tier the UI asks to raise +0.1
+(up to 0.9). Finish writes a delete list and can add UUIDs to “To Delete”.
 """
 
 from __future__ import annotations
@@ -37,6 +43,25 @@ SLOTS = 1
 THUMB_MAX = 900
 THRESHOLD_CAP = 0.9
 THRESHOLD_STEP = 0.1
+PREMARK_MARGIN = 0.1
+VALID_MODES = ("flat", "grouped")
+
+
+def photo_key(photo: dict) -> str:
+    uid = (photo.get("uuid") or "").strip().upper()
+    if uid:
+        return f"u:{uid}"
+    return f"p:{photo.get('path') or ''}"
+
+
+def is_soft_protected(photo: dict, photos_by_series: dict[int, list[dict]]) -> bool:
+    """Best-in-series or sole shot — eligible in flat lists but not pre-marked."""
+    sid = int(photo["series_id"])
+    series = photos_by_series.get(sid, [])
+    if len(series) <= 1:
+        return True
+    best = series[best_photo_index(series)]
+    return photo_key(photo) == photo_key(best)
 
 
 def load_latest_results_path() -> Path | None:
@@ -132,14 +157,25 @@ class ReviewState:
         results_path: Path,
         threshold: float,
         *,
+        mode: str = "flat",
+        page_size: int = 3,
         library_uuids: set[str] | None = None,
     ):
+        mode = (mode or "flat").strip().lower()
+        if mode not in VALID_MODES:
+            raise ValueError(f"mode must be one of {VALID_MODES}, got {mode!r}")
+
         self.results_path = str(results_path.resolve())
         self.scan_date = results.get("scan_date", "unknown")
         self.threshold = round(float(threshold), 2)
+        self.mode = mode
+        self.page_size = max(1, int(page_size))
         self.photos_by_series: dict[int, list[dict]] = {}
+        self.pages: dict[int, list[dict]] = {}
         self.path_set: set[str] = set()
         self.decided: set[int] = set()
+        self.reviewed_keys: set[str] = set()
+        self.kept_from_flat: list[dict] = []
         self.confirmed_delete: list[dict] = []
         self.undo_stack: list[dict] = []
         self.active_slots: list[int | None] = [None] * SLOTS
@@ -147,6 +183,7 @@ class ReviewState:
         self.finished = False
         self.finish_result: dict | None = None
         self.dropped_gone = 0
+        self._page_seq = 0
         self._lock = threading.Lock()
 
         photos = results["photos"]
@@ -159,29 +196,54 @@ class ReviewState:
             if photo.get("path"):
                 self.path_set.add(photo["path"])
 
-        # Drop empty series (all members gone from library)
         self.photos_by_series = {
             sid: plist for sid, plist in self.photos_by_series.items() if plist
         }
 
-        for photos in self.photos_by_series.values():
-            photos.sort(key=lambda p: (p.get("score") is not None, p.get("score") or 0), reverse=True)
+        for series_photos in self.photos_by_series.values():
+            series_photos.sort(
+                key=lambda p: (p.get("score") is not None, p.get("score") or 0),
+                reverse=True,
+            )
 
         self._load_session_or_init()
 
+    def _units(self) -> dict[int, list[dict]]:
+        return self.pages if self.mode == "flat" else self.photos_by_series
+
     def _session_payload(self) -> dict:
-        return {
+        payload: dict[str, Any] = {
             "results_path": self.results_path,
+            "mode": self.mode,
+            "page_size": self.page_size,
             "threshold": self.threshold,
             "decided": sorted(self.decided),
             "confirmed_delete": self.confirmed_delete,
             "active_slots": self.active_slots,
             "finished": self.finished,
+            "finish_result": self.finish_result,
         }
+        if self.mode == "flat":
+            payload["reviewed_keys"] = sorted(self.reviewed_keys)
+            payload["kept_from_flat"] = self.kept_from_flat
+        return payload
 
     def save_session(self) -> None:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         SESSION_FILE.write_text(json.dumps(self._session_payload(), indent=2))
+
+    def _filter_alive_deletes(self, deletes: list[dict]) -> list[dict]:
+        alive_paths = self.path_set
+        alive_uuids = {
+            (p.get("uuid") or "").upper()
+            for photos in self.photos_by_series.values()
+            for p in photos
+        }
+        return [
+            d for d in deletes
+            if (d.get("path") in alive_paths)
+            or ((d.get("uuid") or "").upper() in alive_uuids)
+        ]
 
     def _load_session_or_init(self) -> None:
         if SESSION_FILE.exists():
@@ -189,38 +251,86 @@ class ReviewState:
                 data = json.loads(SESSION_FILE.read_text())
             except (json.JSONDecodeError, OSError):
                 data = None
-            if data and data.get("results_path") == self.results_path and not data.get("finished"):
+            session_mode = (data or {}).get("mode") or "grouped"
+            if (
+                data
+                and data.get("results_path") == self.results_path
+                and not data.get("finished")
+                and session_mode == self.mode
+            ):
                 self.threshold = round(float(data.get("threshold", self.threshold)), 2)
+                if self.mode == "flat":
+                    saved_ps = data.get("page_size")
+                    if saved_ps is not None:
+                        self.page_size = max(1, int(saved_ps))
+                    self.reviewed_keys = set(str(k) for k in data.get("reviewed_keys", []))
+                    self.kept_from_flat = list(data.get("kept_from_flat") or [])
+                    self.confirmed_delete = self._filter_alive_deletes(
+                        data.get("confirmed_delete", [])
+                    )
+                    # Drop reviewed keys / kept entries for gone assets
+                    alive = {photo_key(p) for ps in self.photos_by_series.values() for p in ps}
+                    self.reviewed_keys &= alive
+                    self.kept_from_flat = [
+                        p for p in self.kept_from_flat if photo_key(p) in alive
+                    ]
+                    self.decided = set()
+                    self.active_slots = [None] * SLOTS
+                    self._rebuild_queue()
+                    self._refill_slots()
+                    console.print(
+                        f"[green]Resumed flat session[/green] @ threshold {self.threshold} "
+                        f"(page-size {self.page_size})"
+                    )
+                    return
+
                 self.decided = set(int(x) for x in data.get("decided", []))
-                # Drop pending deletes for assets no longer in the loaded set
-                alive_paths = self.path_set
-                alive_uuids = {
-                    (p.get("uuid") or "").upper()
-                    for photos in self.photos_by_series.values()
-                    for p in photos
-                }
-                self.confirmed_delete = [
-                    d for d in data.get("confirmed_delete", [])
-                    if (d.get("path") in alive_paths)
-                    or ((d.get("uuid") or "").upper() in alive_uuids)
-                ]
+                self.confirmed_delete = self._filter_alive_deletes(
+                    data.get("confirmed_delete", [])
+                )
                 slots = data.get("active_slots") or []
                 self.active_slots = [(int(s) if s is not None else None) for s in slots]
                 while len(self.active_slots) < SLOTS:
                     self.active_slots.append(None)
                 self.active_slots = self.active_slots[:SLOTS]
-                # Forget decided series that vanished entirely after filtering
                 self.decided = {sid for sid in self.decided if sid in self.photos_by_series}
                 self._rebuild_queue()
                 self._refill_slots()
-                console.print(f"[green]Resumed session[/green] @ threshold {self.threshold}")
+                console.print(f"[green]Resumed grouped session[/green] @ threshold {self.threshold}")
                 return
 
         self._rebuild_queue()
         self._refill_slots()
         self.save_session()
 
+    def _flat_candidates(self, threshold: float) -> list[dict]:
+        t = round(threshold, 2)
+        out: list[dict] = []
+        for series_photos in self.photos_by_series.values():
+            for p in series_photos:
+                if photo_key(p) in self.reviewed_keys:
+                    continue
+                score = p.get("score")
+                if score is not None and score < t:
+                    out.append(p)
+        out.sort(key=lambda p: float(p["score"]))
+        return out
+
+    def _rebuild_flat_pages(self) -> None:
+        candidates = self._flat_candidates(self.threshold)
+        self.pages = {}
+        self._page_seq = 0
+        for i in range(0, len(candidates), self.page_size):
+            self._page_seq += 1
+            self.pages[self._page_seq] = candidates[i : i + self.page_size]
+        active = {s for s in self.active_slots if s is not None}
+        self.queue = [pid for pid in sorted(self.pages) if pid not in active]
+        self.decided = set()
+
     def _rebuild_queue(self) -> None:
+        if self.mode == "flat":
+            self._rebuild_flat_pages()
+            return
         eligible = []
         for sid, photos in self.photos_by_series.items():
             if sid in self.decided:
@@ -232,13 +342,19 @@ class ReviewState:
         active = {s for s in self.active_slots if s is not None}
         self.queue = [sid for _, sid in eligible if sid not in active]
 
+    def _unit_still_eligible(self, unit_id: int) -> bool:
+        units = self._units()
+        if unit_id not in units:
+            return False
+        if self.mode == "flat":
+            return unit_id not in self.decided
+        return series_eligible(units[unit_id], self.threshold)
+
     def _refill_slots(self) -> None:
         for i in range(SLOTS):
             if self.active_slots[i] is not None:
-                sid = self.active_slots[i]
-                if sid in self.decided or not series_eligible(
-                    self.photos_by_series.get(sid, []), self.threshold
-                ):
+                uid = self.active_slots[i]
+                if uid in self.decided or not self._unit_still_eligible(uid):
                     self.active_slots[i] = None
         for i in range(SLOTS):
             if self.active_slots[i] is None and self.queue:
@@ -246,6 +362,8 @@ class ReviewState:
 
     def count_new_at_threshold(self, threshold: float) -> int:
         t = round(threshold, 2)
+        if self.mode == "flat":
+            return len(self._flat_candidates(t))
         n = 0
         for sid, photos in self.photos_by_series.items():
             if sid in self.decided:
@@ -255,6 +373,24 @@ class ReviewState:
         return n
 
     def progress(self) -> dict[str, Any]:
+        if self.mode == "flat":
+            remaining_pages = len(self.pages)
+            remaining_photos = sum(len(p) for p in self.pages.values())
+            reviewed_at_or_below = 0
+            for ps in self.photos_by_series.values():
+                for p in ps:
+                    score = p.get("score")
+                    if score is None or score >= self.threshold:
+                        continue
+                    if photo_key(p) in self.reviewed_keys:
+                        reviewed_at_or_below += 1
+            return {
+                "done": reviewed_at_or_below,
+                "total": reviewed_at_or_below + remaining_photos,
+                "remaining": remaining_pages,
+                "confirmed_delete_count": len(self.confirmed_delete),
+            }
+
         eligible_ids = {
             sid for sid, photos in self.photos_by_series.items()
             if sid not in self.decided and series_eligible(photos, self.threshold)
@@ -275,24 +411,53 @@ class ReviewState:
             "confirmed_delete_count": len(self.confirmed_delete),
         }
 
-    def serialize_series(self, sid: int) -> dict:
-        photos = self.photos_by_series[sid]
-        best_i = best_photo_index(photos)
-        marks = set(deletable_indices(photos, self.threshold))
+    def serialize_unit(self, unit_id: int) -> dict:
+        photos = self._units()[unit_id]
         items = []
-        for i, p in enumerate(photos):
-            items.append({
-                "index": i,
-                "uuid": p.get("uuid"),
-                "path": p.get("path"),
-                "score": p.get("score"),
-                "date": p.get("date"),
-                "filename": Path(p["path"]).name if p.get("path") else "",
-                "is_best": i == best_i,
-                "marked_delete": i in marks,
-            })
+        marks: set[int] = set()
+
+        if self.mode == "grouped":
+            best_i = best_photo_index(photos)
+            marks = set(deletable_indices(photos, self.threshold))
+            for i, p in enumerate(photos):
+                items.append({
+                    "index": i,
+                    "uuid": p.get("uuid"),
+                    "path": p.get("path"),
+                    "score": p.get("score"),
+                    "date": p.get("date"),
+                    "filename": Path(p["path"]).name if p.get("path") else "",
+                    "is_best": i == best_i,
+                    "marked_delete": i in marks,
+                })
+        else:
+            premark_cut = self.threshold - PREMARK_MARGIN
+            for i, p in enumerate(photos):
+                protected = is_soft_protected(p, self.photos_by_series)
+                score = p.get("score")
+                marked = (
+                    not protected
+                    and score is not None
+                    and score < premark_cut
+                )
+                if marked:
+                    marks.add(i)
+                series = self.photos_by_series.get(int(p["series_id"]), [])
+                best_i = best_photo_index(series) if series else 0
+                is_best = bool(series) and photo_key(p) == photo_key(series[best_i])
+                items.append({
+                    "index": i,
+                    "uuid": p.get("uuid"),
+                    "path": p.get("path"),
+                    "score": p.get("score"),
+                    "date": p.get("date"),
+                    "filename": Path(p["path"]).name if p.get("path") else "",
+                    "is_best": is_best,
+                    "marked_delete": marked,
+                })
+
         return {
-            "series_id": sid,
+            "series_id": unit_id,
             "photos": items,
             "deletable_count": len(marks),
         }
@@ -305,18 +470,19 @@ class ReviewState:
         with self._lock:
             if self.finished:
                 return {"ok": False, "error": "Session already finished"}
-            sid = int(series_id)
-            if sid not in self.photos_by_series:
-                return {"ok": False, "error": "Unknown series"}
-            if sid in self.decided:
-                return {"ok": False, "error": "Series already decided"}
-            if sid not in self.active_slots:
-                return {"ok": False, "error": "Series not in active slots"}
+            uid = int(series_id)
+            units = self._units()
+            if uid not in units:
+                return {"ok": False, "error": "Unknown unit"}
+            if uid in self.decided:
+                return {"ok": False, "error": "Already decided"}
+            if uid not in self.active_slots:
+                return {"ok": False, "error": "Not in active slots"}
 
-            photos = self.photos_by_series[sid]
+            photos = units[uid]
             deleted = []
-            for i in delete_indices:
-                i = int(i)
+            delete_set = {int(i) for i in delete_indices}
+            for i in sorted(delete_set):
                 if i < 0 or i >= len(photos):
                     return {"ok": False, "error": f"Invalid photo index {i}"}
                 p = photos[i]
@@ -324,30 +490,48 @@ class ReviewState:
                     "uuid": p.get("uuid"),
                     "path": p.get("path"),
                     "score": p.get("score"),
-                    "series_id": sid,
+                    "series_id": int(p.get("series_id", uid)),
+                    "unit_id": uid,
                 }
                 deleted.append(entry)
                 self.confirmed_delete.append(entry)
 
-            self.undo_stack.append({"series_id": sid, "deleted": deleted})
-            self.decided.add(sid)
+            kept_here = []
+            if self.mode == "flat":
+                for i, p in enumerate(photos):
+                    self.reviewed_keys.add(photo_key(p))
+                    if i not in delete_set:
+                        kept_here.append(p)
+                        self.kept_from_flat.append(p)
 
-            # Clear slot and refill
+            self.undo_stack.append({
+                "mode": self.mode,
+                "series_id": uid,
+                "deleted": deleted,
+                "kept": kept_here,
+                "photos": list(photos) if self.mode == "flat" else None,
+            })
+            self.decided.add(uid)
+
+            if self.mode == "flat":
+                self.pages.pop(uid, None)
+                if uid in self.queue:
+                    self.queue.remove(uid)
+
             for i, s in enumerate(self.active_slots):
-                if s == sid:
+                if s == uid:
                     self.active_slots[i] = None
             self._refill_slots()
             self.save_session()
             return {"ok": True, "state": self._unlocked_public_state()}
 
     def _unlocked_public_state(self) -> dict:
-        # Caller holds lock
         slots = []
-        for sid in self.active_slots:
-            if sid is None:
+        for uid in self.active_slots:
+            if uid is None:
                 slots.append(None)
             else:
-                slots.append(self.serialize_series(sid))
+                slots.append(self.serialize_unit(uid))
         prog = self.progress()
         tier_empty = prog["remaining"] == 0 and not self.finished
         next_t = round(self.threshold + THRESHOLD_STEP, 2)
@@ -358,6 +542,8 @@ class ReviewState:
             can_raise = next_count > 0
 
         return {
+            "mode": self.mode,
+            "page_size": self.page_size,
             "threshold": self.threshold,
             "scan_date": self.scan_date,
             "slots": slots,
@@ -381,28 +567,50 @@ class ReviewState:
             if not self.undo_stack:
                 return {"ok": False, "error": "Nothing to undo"}
             last = self.undo_stack.pop()
-            sid = int(last["series_id"])
+            uid = int(last["series_id"])
             deleted = last["deleted"]
-            # Remove matching trailing deletes for this series
             remove_paths = {d.get("path") for d in deleted}
+            remove_keys = {photo_key(d) for d in deleted}
+            # Also match by unit_id for flat commits
             self.confirmed_delete = [
                 d for d in self.confirmed_delete
-                if not (d.get("series_id") == sid and d.get("path") in remove_paths)
+                if not (
+                    (d.get("unit_id") == uid or d.get("series_id") == uid)
+                    and (d.get("path") in remove_paths or photo_key(d) in remove_keys)
+                )
             ]
-            self.decided.discard(sid)
-            # Always put undone series on screen; displace current to front of queue
+
+            if self.mode == "flat" and last.get("mode") == "flat":
+                photos = last.get("photos") or []
+                for p in photos:
+                    self.reviewed_keys.discard(photo_key(p))
+                kept_keys = {photo_key(p) for p in (last.get("kept") or [])}
+                self.kept_from_flat = [
+                    p for p in self.kept_from_flat if photo_key(p) not in kept_keys
+                ]
+                if photos:
+                    self.pages[uid] = photos
+                self.decided.discard(uid)
+            else:
+                self.decided.discard(uid)
+
             displaced = None
-            if sid in self.active_slots:
+            if uid in self.active_slots:
                 pass
             elif None in self.active_slots:
-                self.active_slots[self.active_slots.index(None)] = sid
+                self.active_slots[self.active_slots.index(None)] = uid
             else:
                 for i, s in enumerate(self.active_slots):
                     if s is not None:
                         displaced = s
-                        self.active_slots[i] = sid
+                        self.active_slots[i] = uid
                         break
-            self._rebuild_queue()
+
+            if self.mode == "flat":
+                active = {s for s in self.active_slots if s is not None}
+                self.queue = [pid for pid in sorted(self.pages) if pid not in active]
+            else:
+                self._rebuild_queue()
             if displaced is not None:
                 if displaced in self.queue:
                     self.queue.remove(displaced)
@@ -419,13 +627,15 @@ class ReviewState:
                 return {"ok": False, "error": "Threshold cap reached"}
             self.threshold = next_t
             self.active_slots = [None] * SLOTS
+            if self.mode == "flat":
+                self.undo_stack = []  # page ids rebuild; undos would be stale
             self._rebuild_queue()
             self._refill_slots()
             self.save_session()
             return {"ok": True, "state": self._unlocked_public_state()}
 
     def kept_photos(self) -> list[dict]:
-        """Photos in decided series that were not marked for deletion."""
+        """Photos reviewed and not marked for deletion."""
         delete_uuids = set()
         delete_paths = set()
         for d in self.confirmed_delete:
@@ -435,7 +645,23 @@ class ReviewState:
             if d.get("path"):
                 delete_paths.add(d["path"])
 
-        kept: list[dict] = []
+        if self.mode == "flat":
+            kept: list[dict] = []
+            seen: set[str] = set()
+            for p in self.kept_from_flat:
+                key = photo_key(p)
+                if key in seen:
+                    continue
+                uid = normalize_uuid(p.get("uuid"))
+                if uid and uid in delete_uuids:
+                    continue
+                if p.get("path") and p["path"] in delete_paths:
+                    continue
+                seen.add(key)
+                kept.append(p)
+            return kept
+
+        kept = []
         for sid in self.decided:
             for p in self.photos_by_series.get(sid, []):
                 uid = normalize_uuid(p.get("uuid"))
@@ -777,14 +1003,28 @@ class ReviewHandler(BaseHTTPRequestHandler):
 def main() -> None:
     global STATE
 
-    parser = argparse.ArgumentParser(description="Multi-stack browser review for deletion suggestions")
+    parser = argparse.ArgumentParser(
+        description="Browser review for deletion suggestions (flat pages or grouped series)"
+    )
     parser.add_argument("--results", type=str, default=None, help="Path to scan results JSON")
+    parser.add_argument(
+        "--mode",
+        choices=VALID_MODES,
+        default="flat",
+        help="flat: threshold list paginated; grouped: similar-photo series (default flat)",
+    )
     parser.add_argument("--threshold", type=float, default=0.5, help="Starting score threshold (default 0.5)")
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=3,
+        help="Photos per page in flat mode (default 3; ignored for grouped)",
+    )
     parser.add_argument("--port", type=int, default=8765, help="Local port (default 8765)")
     parser.add_argument("--no-open", action="store_true", help="Do not auto-open browser")
     args = parser.parse_args()
 
-    console.print("\n[bold blue]PhotoScanner — Multi-stack Review[/bold blue]\n")
+    console.print("\n[bold blue]PhotoScanner — Review[/bold blue]\n")
 
     if args.results:
         results_path = Path(args.results)
@@ -804,7 +1044,8 @@ def main() -> None:
 
     console.print(f"Scan date: {results.get('scan_date', 'unknown')}")
     console.print(f"Photos: {results.get('total_photos', len(results.get('photos', [])))}")
-    console.print(f"Start threshold: {args.threshold}")
+    console.print(f"Mode: [cyan]{args.mode}[/cyan]  threshold: {args.threshold}"
+                  + (f"  page-size: {args.page_size}" if args.mode == "flat" else ""))
 
     library_uuids = load_photos_library_uuids()
     if library_uuids is None:
@@ -812,15 +1053,23 @@ def main() -> None:
     else:
         console.print(f"Photos library assets: [cyan]{len(library_uuids):,}[/cyan]")
 
-    STATE = ReviewState(results, results_path, args.threshold, library_uuids=library_uuids)
+    STATE = ReviewState(
+        results,
+        results_path,
+        args.threshold,
+        mode=args.mode,
+        page_size=args.page_size,
+        library_uuids=library_uuids,
+    )
     if STATE.dropped_gone:
         console.print(
             f"[dim]Dropped {STATE.dropped_gone:,} scan photos gone from Photos library[/dim]"
         )
     prog = STATE.progress()
+    unit = "pages" if STATE.mode == "flat" else "series"
     console.print(
-        f"Queue @ {STATE.threshold}: [yellow]{prog['remaining']}[/yellow] series "
-        f"(resume done {prog['done']})"
+        f"Queue @ {STATE.threshold}: [yellow]{prog['remaining']}[/yellow] {unit} "
+        f"(done {prog['done']} / {prog['total']})"
     )
 
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
@@ -829,7 +1078,7 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), ReviewHandler)
     url = f"http://127.0.0.1:{args.port}/"
     console.print(f"\n[green]Serving[/green] {url}")
-    console.print("[dim]Keys: ←/→ photo · Space toggle · Enter commit · s/d mark all keep/delete · u undo[/dim]")
+    console.print("[dim]Keys: ←/→ photo · Space toggle · Enter commit · s/d mark all keep/delete · u undo · Done early[/dim]")
     console.print("[dim]Ctrl+C to stop server[/dim]\n")
 
     if not args.no_open:

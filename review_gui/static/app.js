@@ -1,5 +1,6 @@
 (() => {
   const boards = document.getElementById("boards");
+  const brandSub = document.querySelector(".brand-sub");
   const thresholdPill = document.getElementById("threshold-pill");
   const progressPill = document.getElementById("progress-pill");
   const deletePill = document.getElementById("delete-pill");
@@ -29,6 +30,20 @@
     return res.json();
   }
 
+  function isFlat() {
+    return state?.mode === "flat";
+  }
+
+  function unitWord(count = 1) {
+    if (isFlat()) return count === 1 ? "page" : "pages";
+    return "series";
+  }
+
+  function tierUnitWord(count) {
+    if (isFlat()) return count === 1 ? "photo" : "photos";
+    return "series";
+  }
+
   function slotCount() {
     return state?.slots?.length || 1;
   }
@@ -51,9 +66,11 @@
 
   function slotsSignature() {
     if (!state) return "";
-    return state.slots
-      .map((s) => (s ? `${s.series_id}:${s.photos.length}` : "-"))
-      .join("|");
+    return (
+      (state.mode || "") +
+      ":" +
+      state.slots.map((s) => (s ? `${s.series_id}:${s.photos.length}` : "-")).join("|")
+    );
   }
 
   function ensureMarks(series) {
@@ -69,9 +86,7 @@
 
   function pruneMarks() {
     if (!state) return;
-    const live = new Set(
-      state.slots.filter(Boolean).map((s) => s.series_id)
-    );
+    const live = new Set(state.slots.filter(Boolean).map((s) => s.series_id));
     for (const sid of [...marks.keys()]) {
       if (!live.has(sid)) marks.delete(sid);
     }
@@ -108,8 +123,17 @@
   function renderMeta() {
     if (!state) return;
     const p = state.progress || {};
+    if (brandSub) {
+      brandSub.textContent = isFlat()
+        ? `flat · ${state.page_size || 3}/page`
+        : "grouped series";
+    }
     thresholdPill.textContent = `T ${state.threshold.toFixed(1)}`;
-    progressPill.textContent = `${p.done || 0} / ${p.total || 0} · ${p.remaining || 0} left`;
+    if (isFlat()) {
+      progressPill.textContent = `${p.done || 0} / ${p.total || 0} photos · ${p.remaining || 0} ${unitWord(p.remaining || 0)} left`;
+    } else {
+      progressPill.textContent = `${p.done || 0} / ${p.total || 0} · ${p.remaining || 0} left`;
+    }
     deletePill.textContent = `${p.confirmed_delete_count || 0} marked`;
     btnUndo.disabled = !state.can_undo || busy;
   }
@@ -194,6 +218,10 @@
     setPhotoFocus(photoFocus + delta);
   }
 
+  function unitLabel(series) {
+    return isFlat() ? `Page ${series.series_id}` : `Series ${series.series_id}`;
+  }
+
   function buildBoards() {
     boards.innerHTML = "";
     builtSignature = slotsSignature();
@@ -216,7 +244,7 @@
       const markSet = ensureMarks(series);
       const head = document.createElement("div");
       head.className = "stack-head";
-      head.innerHTML = `<span>Series ${series.series_id}</span><span>${markSet.size} del</span>`;
+      head.innerHTML = `<span>${unitLabel(series)}</span><span>${markSet.size} del</span>`;
       row.appendChild(head);
 
       const body = document.createElement("div");
@@ -326,10 +354,11 @@
     if (!state.tier_empty) return;
 
     if (state.can_raise && state.next_threshold != null) {
+      const n = state.next_tier_count || 0;
       showModal(
         "tier",
         "Tier complete",
-        `No series left at threshold ${state.threshold.toFixed(1)}. Raise to ${state.next_threshold.toFixed(1)}? ${state.next_tier_count} new series.`,
+        `Nothing left at threshold ${state.threshold.toFixed(1)}. Raise to ${state.next_threshold.toFixed(1)}? ${n} new ${tierUnitWord(n)}.`,
         `Raise to ${state.next_threshold.toFixed(1)}`,
         "Finish"
       );
@@ -339,7 +368,7 @@
     showModal(
       "finish",
       "Review complete",
-      `No more series up to the threshold cap. ${state.progress.confirmed_delete_count} photos marked for deletion.`,
+      `No more candidates up to the threshold cap. ${state.progress.confirmed_delete_count} photos marked for deletion.`,
       "Save & add to album",
       "Save only"
     );
@@ -477,7 +506,7 @@
     showModal(
       "finish",
       "Finish review?",
-      `${state?.progress?.confirmed_delete_count || 0} photos currently marked. Save confirmed list now?`,
+      `${state?.progress?.confirmed_delete_count || 0} photos currently marked. Save confirmed list now? (Done early is OK.)`,
       "Save & add to album",
       "Save only"
     );

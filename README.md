@@ -52,23 +52,29 @@ python scan_photos.py --after 2023-11-18 --threshold 0.8
 
 ### 3. Review and delete
 
-**Option A: Multi-stack browser review (recommended for large libraries)**
+**Option A: Browser review (recommended)**
 
 ```bash
+# Flat mode (default): all photos below threshold, paginated
 python review_gui.py
-python review_gui.py --threshold 0.5 --port 8765
+python review_gui.py --mode flat --threshold 0.5 --page-size 3
+
+# Grouped mode: one similar-photo series at a time (best kept, others culled)
+python review_gui.py --mode grouped --threshold 0.5
 ```
 
-Opens a local UI with up to 3 series rows (photos left-to-right). Model suggestions are pre-marked for deletion.
+Same local UI for both modes. Flat shows `--page-size` photos per screen (default **3**), worst scores first. Soft-protected best/sole shots can appear but are not pre-marked; others are pre-marked only when clearly under threshold (`score < threshold − 0.1`).
 
 Keys:
-- `←` / `→` — focus stack
-- `1`–`9` — toggle delete/keep on that photo (best is locked)
-- `Enter` — commit focused stack
-- `n` — keep all in focused stack
+- `←` / `→` — focus photo
+- `Space` — toggle delete/keep
+- `1`–`9` — jump to photo # and toggle
+- `Enter` — commit current page/series
+- `s` / `d` — mark all keep / all delete
 - `u` — undo last commit
+- **Done** — finish early (save list + optional “To Delete” album)
 
-When a threshold tier is empty, you are prompted to raise it by **+0.1** (more candidates). Progress auto-saves to `output/review_session.json` (resume on relaunch). Finish writes `confirmed_delete_*.txt` and can add UUIDs to the Photos “To Delete” album.
+When a threshold tier is empty, you are asked whether to raise it by **+0.1** (more candidates, both modes). Progress auto-saves to `output/review_session.json` (resume on relaunch with the same `--mode`). Finish writes `confirmed_delete_*.txt` and can add UUIDs to the Photos “To Delete” album.
 
 **Option B: Move to album**
 
