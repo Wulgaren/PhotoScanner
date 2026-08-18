@@ -15,6 +15,7 @@ from tqdm import tqdm
 import pickle
 
 from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.paths import BAD_PHOTOS_DIR, CACHE_DIR, ensure_data_dirs
 
 # Register HEIC support
 try:
@@ -30,13 +31,7 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.tiff',
 
 console = Console()
 
-# Directory to store models and cache
-CACHE_DIR = Path(__file__).parent / '.cache'
-CACHE_DIR.mkdir(exist_ok=True)
-
-# Folder for bad photo examples
-BAD_PHOTOS_DIR = Path(__file__).parent / 'BadPhotos'
-# File for rescued photos (from feedback learning)
+ensure_data_dirs()
 RESCUED_PHOTOS_FILE = CACHE_DIR / 'rescued_photos.json'
 
 
@@ -348,7 +343,7 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
     
     console.print(f"\n[bold green]✓ Training complete![/bold green]")
     console.print(f"  Model saved to: {model_path}")
-    console.print(f"\nNext step: Run [cyan]python scan_photos.py --after {cutoff_date.strftime('%Y-%m-%d')}[/cyan]")
+    console.print(f"\nNext step: [cyan]./photoscanner.sh[/cyan] (Scan) or [dim]python src/scan_photos.py --after {cutoff_date.strftime('%Y-%m-%d')}[/dim]")
 
 
 def main():

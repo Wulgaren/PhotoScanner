@@ -12,10 +12,11 @@ import argparse
 from rich.console import Console
 import pickle
 
+from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
+
 console = Console()
 
-OUTPUT_DIR = Path(__file__).parent / 'output'
-CACHE_DIR = Path(__file__).parent / '.cache'
+ensure_data_dirs()
 FEEDBACK_FILE = CACHE_DIR / 'feedback_history.json'
 
 
@@ -164,7 +165,7 @@ def check_feedback(album_name: str = "To Delete"):
     
     if not added_photos:
         console.print("[yellow]No feedback history found.[/yellow]")
-        console.print("[dim]Run move_to_album.py first, then remove good photos from the album.[/dim]")
+        console.print("[dim]Run ./photoscanner.sh (Move to album) first, then remove good photos from the album.[/dim]")
         return
     
     console.print(f"Photos previously added to '{album_name}': {len(added_photos)}")
@@ -258,8 +259,8 @@ def check_feedback(album_name: str = "To Delete"):
         console.print(f"[red]✓[/red] Added {len(all_new_bad)} deleted photos as negative examples")
     
     console.print("\n[bold]Next steps:[/bold]")
-    console.print("  1. Run [cyan]python train_model.py[/cyan] to retrain with feedback")
-    console.print("  2. Run [cyan]python scan_photos.py[/cyan] to rescan with improved model")
+    console.print("  1. Run [cyan]./photoscanner.sh[/cyan] (Train) to retrain with feedback")
+    console.print("  2. Run [cyan]./photoscanner.sh[/cyan] (Scan) to rescan with the improved model")
 
 
 def add_rescued_to_training(rescued_uuids: set, added_photos: dict = None):

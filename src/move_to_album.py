@@ -11,10 +11,11 @@ from rich.console import Console
 from rich.progress import track
 
 from learn_from_feedback import record_added_photos
+from photo_scanner.paths import OUTPUT_DIR, ensure_data_dirs
 
 console = Console()
 
-OUTPUT_DIR = Path(__file__).parent / 'output'
+ensure_data_dirs()
 
 
 def add_photos_to_album(uuids: list, album_name: str, batch_size: int = 50) -> int:
@@ -95,7 +96,7 @@ def move_to_album(threshold: float = 0.8, album_name: str = "To Delete",
     else:
         results, source = load_latest_results()
         if not results:
-            console.print("[red]No scan results found. Run scan_photos.py first.[/red]")
+            console.print("[red]No scan results found. Run ./photoscanner.sh (Scan) first.[/red]")
             return
     
     console.print(f"Loaded: {source}")

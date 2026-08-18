@@ -13,9 +13,11 @@ from rich.console import Console
 from rich.table import Table
 from rich.prompt import Prompt, Confirm
 
+from photo_scanner.paths import OUTPUT_DIR, ensure_data_dirs
+
 console = Console()
 
-OUTPUT_DIR = Path(__file__).parent / 'output'
+ensure_data_dirs()
 
 
 def add_photos_to_album(uuids: list, album_name: str) -> bool:
@@ -85,7 +87,7 @@ def interactive_review(results_file: str = None):
     else:
         results = load_latest_results()
         if not results:
-            console.print("[red]No scan results found. Run scan_photos.py first.[/red]")
+            console.print("[red]No scan results found. Run ./photoscanner.sh (Scan) first.[/red]")
             return
     
     console.print(f"Loaded results from: {results.get('scan_date', 'unknown')}")

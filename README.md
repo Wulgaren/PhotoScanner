@@ -1,230 +1,42 @@
-# PhotoScanner 📸
+# PhotoScanner
 
-AI-powered photo curation assistant that learns your preferences from your Apple Photos library. Also includes a Twitter/X image curator that uses the same trained model!
+AI-powered photo curation that learns your taste from your Apple Photos library. Twitter/X image curation uses the same model. Everything runs locally on your Mac.
 
-## Features
+## Setup (once)
 
-- 🎯 **Learns your taste** - Trains on your manually curated photos
-- 📊 **Quality scoring** - Rates photos based on your preferences
-- 🔗 **Series detection** - Groups similar photos and bursts together
-- 🛡️ **Safe suggestions** - Never suggests deleting the best photo in a series
-- 🍎 **Apple Photos integration** - Works directly with your Photos library
-- 🔄 **Feedback learning** - Improves over time based on your corrections
-- 🐦 **Twitter curator** - Auto-curates images from Twitter/X using the same model
-- 🔒 **100% Private** - All processing happens locally on your Mac
-
-## Setup
+Python **3.10–3.13** (not 3.14+; `osxphotos` cannot use 3.14 yet).
 
 ```bash
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Usage
+Grant Terminal/Python access to Photos: System Settings → Privacy & Security → Photos.
 
-### 1. Train the model
+Optional: put photos you consider bad in `BadPhotos/` so training has negative examples.
 
-```bash
-# Train on your favorited photos before a cutoff date
-python train_model.py --cutoff-date 2023-11-18
-```
+Twitter curator: copy `config.example.json` to `config.json` and fill in the Discord token and channel IDs. Full flags are in [`src/README.md`](src/README.md).
 
-**Optional: Add bad examples for better accuracy**
-
-Create a `BadPhotos/` folder and add photos you consider bad. The model will learn to distinguish good from bad:
+## Run
 
 ```bash
-mkdir BadPhotos
-# Copy/move bad example photos into BadPhotos/
-python train_model.py --cutoff-date 2023-11-18
+./photoscanner.sh
 ```
 
-### 2. Scan photos for suggestions
+That uses `venv` and opens a numbered menu:
 
-```bash
-# Scan favorited photos after the cutoff date
-python scan_photos.py --after 2023-11-18 --threshold 0.8
-```
+1. **Guided cycle** — Train → Scan → Review → Learn (skip any step)
+2. **Pick a tool** — one job (including move-to-album, Twitter, summarize)
 
-### 3. Review and delete
+Each job shows the equivalent `python` command, then runs it. Last dates and thresholds are remembered. After a cycle or a single tool, you are back at the shell.
 
-**Option A: Browser review (recommended)**
+## What it does
 
-```bash
-# Flat mode (default): all photos below threshold, paginated
-python review_gui.py
-python review_gui.py --mode flat --threshold 0.5 --page-size 3
+- Trains on favorited photos (and `BadPhotos/` / feedback)
+- Scores later photos and groups bursts/series
+- Browser review for keep/delete (never auto-deletes the best shot in a series)
+- Learns from what you rescue vs leave in “To Delete”
+- Optional Twitter/X curator via Discord
 
-# Grouped mode: one similar-photo series at a time (best kept, others culled)
-python review_gui.py --mode grouped --threshold 0.5
-```
-
-Same local UI for both modes. Flat shows `--page-size` photos per screen (default **3**), worst scores first. Soft-protected best/sole shots can appear but are not pre-marked; others are pre-marked only when clearly under threshold (`score < threshold − 0.1`).
-
-Keys:
-- `←` / `→` — focus photo
-- `Space` — toggle delete/keep
-- `1`–`9` — jump to photo # and toggle
-- `Enter` — commit current page/series
-- `s` / `d` — mark all keep / all delete
-- `u` — undo last commit
-- **Done** — finish early (save list + optional “To Delete” album)
-
-When a threshold tier is empty, you are asked whether to raise it by **+0.1** (more candidates, both modes). Progress auto-saves to `output/review_session.json` (resume on relaunch with the same `--mode`). Finish writes `confirmed_delete_*.txt` and can add UUIDs to the Photos “To Delete” album.
-
-**Option B: Move to album**
-
-```bash
-# Move low-scoring photos to "To Delete" album in Photos app
-python move_to_album.py --threshold 0.8
-
-# Dry run first to see what would be moved
-python move_to_album.py --threshold 0.8 --dry-run
-```
-
-Then open Photos app → "To Delete" album → review → delete what you don't want.
-
-**Option C: Interactive CLI review**
-
-```bash
-python interactive_review.py
-```
-
-Commands:
-- `v` - View all photos in Preview
-- `v #` - View specific photo (e.g., `v 2`)
-- `f` - Show in Finder
-- `k #` - Keep only photo # (delete others)
-- `d #` - Delete specific photos (e.g., `d 2 3`)
-- `da` - Delete ALL in this series
-- `y` - Confirm suggestions
-- `n` - Keep all
-- `s` - Skip
-- `q` - Quit
-
-### 4. Learn from feedback
-
-After sorting through the "To Delete" album:
-
-```bash
-python learn_from_feedback.py
-```
-
-This checks which photos you:
-- **Rescued** (removed from album but kept in library) → become positive examples
-- **Left in album or deleted** → become negative examples
-
-Then retrain:
-
-```bash
-python train_model.py --cutoff-date 2023-11-18
-```
-
-The model gets smarter with each feedback cycle! 🧠
-
----
-
-## Twitter Curator 🐦
-
-Automatically curate images from Twitter/X using your trained aesthetic model.
-
-### Setup
-
-1. **Create a Discord bot** at [Discord Developer Portal](https://discord.com/developers/applications)
-   - Create new application → Bot section → Reset Token → Copy
-   - Enable **"Message Content Intent"** under Privileged Gateway Intents
-   - OAuth2 → URL Generator → Select `bot` scope + `Read Messages/View Channels` + `Read Message History`
-   - Add bot to your server
-
-2. **Get channel IDs** (Enable Developer Mode in Discord → Right-click channel → Copy ID)
-
-3. **Edit `config.json`**:
-```json
-{
-    "discord_token": "your-bot-token",
-    "tweetshift_channel_ids": [
-        123456789012345678,
-        123456789012345679
-    ],
-    "score_threshold": 0.8
-}
-```
-
-### Usage
-
-```bash
-# Fetch last 24 hours and exit
-python twitter_curator.py --hours 24 --no-listen
-
-# Fetch last 24 hours, then keep listening for new tweets
-python twitter_curator.py --hours 24
-
-# Just listen for new tweets (no backfill)
-python twitter_curator.py
-```
-
-### Output
-
-Images are saved to `~/Pictures/TwitterImages/`:
-
-| Folder | Contents |
-|--------|----------|
-| `all/` | Non-curated images only (curated images stay in `curated/` only) |
-| `videos/` | Non-curated videos/GIFs only (curated videos stay in `curated/` only) |
-| `curated/` | High-scoring images (≥ threshold) and videos whose tweet text has keywords |
-| `announcements/` | Images from tweets with announcement keywords |
-
-- Filenames include the Twitter author: `AuthorName_20260108_143022_abc123.jpg`
-- Tweet URL is embedded in image EXIF metadata
-- `announcements/announcements.txt` logs important tweets
-- `announcements/announcements_summary.txt` is written when the bot exits, if you have built the Swift helper (macOS + Apple Intelligence). Same step can be run by hand: `python summarize_announcements.py`
-
-```bash
-cd tools/AnnouncementsSummarizer && swift build -c release
-# optional manual run: python summarize_announcements.py
-# or: python summarize_announcements.py --path /path/to/announcements.txt
-# dry-run: python summarize_announcements.py --dry-run
-```
-
-Uses Apple’s Foundation Models framework; on-device vs Private Cloud compute is chosen by the system, not the app.
-
----
-
-## How It Works
-
-1. **Feature Extraction**: Uses pretrained EfficientNet to extract visual features
-2. **Preference Learning**: Learns your aesthetic preferences from curated photos
-3. **Series Grouping**: Groups photos by time and visual similarity (perceptual hashing)
-4. **Smart Ranking**: Ranks photos by predicted quality within each series
-5. **Feedback Loop**: Continuously improves based on your corrections
-
-## Privacy
-
-✅ All processing happens locally on your Mac  
-✅ No photos are uploaded anywhere  
-✅ Model weights stay on your device  
-✅ Discord bot only reads messages, doesn't store externally
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `train_model.py` | Train the aesthetic model |
-| `scan_photos.py` | Scan photos and generate suggestions |
-| `move_to_album.py` | Move low-scoring photos to Photos album |
-| `interactive_review.py` | Interactively review suggestions |
-| `learn_from_feedback.py` | Learn from your sorting decisions |
-| `twitter_curator.py` | Discord bot for Twitter image curation |
-| `summarize_announcements.py` | Optional: write `announcements_summary.txt` (also runs at bot exit on Mac) |
-| `config.json` | Configuration (Discord token, channels, etc.) |
-
-## Tips
-
-- **Start with a high threshold** (0.8) and lower it if needed
-- **Add bad examples** to `BadPhotos/` for much better accuracy
-- **Run feedback learning** after each sorting session
-- **Safe to interrupt** - progress is saved incrementally during training
+Scripts, flags, and internals: [`src/README.md`](src/README.md).

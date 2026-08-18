@@ -31,14 +31,17 @@ from rich.console import Console
 
 from interactive_review import add_photos_to_album, open_in_preview
 from learn_from_feedback import normalize_uuid, record_added_photos, record_review_kept
+from photo_scanner.paths import (
+    OUTPUT_DIR,
+    SESSION_FILE,
+    STATIC_DIR,
+    THUMB_DIR,
+    ensure_data_dirs,
+)
 
 console = Console()
 
-ROOT = Path(__file__).parent
-OUTPUT_DIR = ROOT / "output"
-STATIC_DIR = ROOT / "review_gui" / "static"
-THUMB_DIR = ROOT / ".cache" / "review_thumbs"
-SESSION_FILE = OUTPUT_DIR / "review_session.json"
+ensure_data_dirs()
 SLOTS = 1
 THUMB_MAX = 900
 THRESHOLD_CAP = 0.9
@@ -1031,7 +1034,7 @@ def main() -> None:
     else:
         results_path = load_latest_results_path()
         if not results_path:
-            console.print("[red]No scan results found. Run scan_photos.py first.[/red]")
+            console.print("[red]No scan results found. Run ./photoscanner.sh (Scan) first.[/red]")
             return
 
     if not results_path.exists():

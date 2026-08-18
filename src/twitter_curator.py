@@ -16,11 +16,8 @@ from io import BytesIO
 import hashlib
 import piexif
 
-# Add parent to path for imports
-import sys
-sys.path.insert(0, str(Path(__file__).parent))
-
 from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.paths import CACHE_DIR, CONFIG_PATH, MODEL_PATH, ensure_data_dirs
 
 # Register HEIC support
 try:
@@ -30,9 +27,9 @@ except ImportError:
     pass
 
 # ============ CONFIGURATION ============
-# Edit config.json to set your settings!
+# Edit config.json (repo root) to set your settings!
 
-CONFIG_PATH = Path(__file__).parent / 'config.json'
+ensure_data_dirs()
 
 def load_config():
     """Load configuration from config.json"""
@@ -73,9 +70,6 @@ VIDEOS_DIR = BASE_SAVE_DIR / "videos"
 
 # ==========================================
 
-CACHE_DIR = Path(__file__).parent / '.cache'
-MODEL_PATH = CACHE_DIR / 'aesthetic_model.pkl'
-
 
 class ImageScorer:
     """Handles image scoring using the trained model."""
@@ -92,7 +86,7 @@ class ImageScorer:
             
         if not MODEL_PATH.exists():
             print(f"❌ Model not found at {MODEL_PATH}")
-            print("   Run train_model.py first!")
+            print("   Run ./photoscanner.sh (Train) first!")
             return False
         
         print("Loading aesthetic model...")

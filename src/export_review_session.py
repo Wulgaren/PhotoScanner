@@ -124,8 +124,8 @@ def main() -> None:
 
     console.print("\n[bold]Next:[/bold]")
     console.print("  1. In Photos, sort the “To Delete” album (remove any you want to keep)")
-    console.print("  2. Run [cyan]python learn_from_feedback.py[/cyan]")
-    console.print("  3. Run [cyan]python train_model.py[/cyan] to retrain")
+    console.print("  2. Run [cyan]python src/learn_from_feedback.py[/cyan] or [cyan]./photoscanner.sh[/cyan] (Learn)")
+    console.print("  3. Run [cyan]./photoscanner.sh[/cyan] (Train) to retrain")
 
 
 if __name__ == "__main__":

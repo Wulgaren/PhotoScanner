@@ -12,10 +12,8 @@ import os
 import platform
 import subprocess
 import sys
-from pathlib import Path
+from photo_scanner.paths import CONFIG_PATH, TOOLS_DIR
 
-REPO_ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = REPO_ROOT / "config.json"
 SUMMARY_NAME = "announcements_summary.txt"
 
 
@@ -26,8 +24,7 @@ def default_binary() -> Path:
     arch = platform.machine()  # arm64 or x86_64 on Mac
     triple = f"{arch}-apple-macosx"
     return (
-        REPO_ROOT
-        / "tools"
+        TOOLS_DIR
         / "AnnouncementsSummarizer"
         / ".build"
         / triple
@@ -75,7 +72,7 @@ def write_announcements_summary(
     if not bin_path.is_file():
         print(
             "⚠️  announcements-summarizer not found; build: "
-            "cd tools/AnnouncementsSummarizer && swift build -c release",
+            "cd src/tools/AnnouncementsSummarizer && swift build -c release",
             file=sys.stderr,
         )
         return False

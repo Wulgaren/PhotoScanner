@@ -16,6 +16,7 @@ import pickle
 import json
 
 from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
 
 # Register HEIC support
 try:
@@ -32,9 +33,7 @@ from photo_scanner.series_detector import (
 
 console = Console()
 
-CACHE_DIR = Path(__file__).parent / '.cache'
-OUTPUT_DIR = Path(__file__).parent / 'output'
-OUTPUT_DIR.mkdir(exist_ok=True)
+ensure_data_dirs()
 
 
 def scan(after_date: datetime, score_threshold: float = 0.3,
@@ -53,7 +52,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     # Load trained model
     model_path = CACHE_DIR / 'aesthetic_model.pkl'
     if not model_path.exists():
-        console.print("[red]Error: Model not found. Run train_model.py first.[/red]")
+        console.print("[red]Error: Model not found. Run ./photoscanner.sh (Train) first.[/red]")
         return
     
     # Initialize
