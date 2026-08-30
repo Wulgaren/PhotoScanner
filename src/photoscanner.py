@@ -32,17 +32,19 @@ COMMON_HELP = {
     "review": "Open the browser UI to keep or cull suggestions.",
     "learn": "Turn album rescues and leftover deletes into training examples.",
     "move": "Put low-scoring photos in the Photos “To Delete” album.",
+    "captions": "Fill empty captions in a smart album from learned usernames.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
     "summarize": "Write announcements_summary.txt via Apple Foundation Models.",
 }
 
-MENU_ORDER = ("train", "scan", "review", "learn", "move", "twitter", "summarize")
+MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "twitter", "summarize")
 MENU_LABELS = {
     "train": "Train",
     "scan": "Scan",
     "review": "Review (browser)",
     "learn": "Learn from feedback",
     "move": "Move to “To Delete” album",
+    "captions": "Add captions",
     "twitter": "Twitter curator",
     "summarize": "Summarize announcements",
 }
@@ -53,6 +55,7 @@ SCRIPTS = {
     "review": "review_gui.py",
     "learn": "learn_from_feedback.py",
     "move": "move_to_album.py",
+    "captions": "add_captions.py",
     "twitter": "twitter_curator.py",
     "summarize": "summarize_announcements.py",
 }
@@ -280,6 +283,22 @@ def collect_move(state: dict) -> list[str]:
     return extra
 
 
+def collect_captions(state: dict) -> list[str]:
+    extra: list[str] = []
+    if more_options():
+        dry_run = Confirm.ask(
+            "Dry run (don’t write captions or the map)?",
+            default=bool(last(state, "captions", "dry_run", False)),
+        )
+        album = ask_str("Album name", last(state, "captions", "album", "Non-added photos"))
+        put(state, "captions", dry_run=dry_run, album=album)
+        if dry_run:
+            extra.append("--dry-run")
+        if album != "Non-added photos":
+            extra += ["--album", album]
+    return extra
+
+
 def collect_twitter(state: dict) -> list[str]:
     hours = ask_int("Backfill hours (0 = live only)", last(state, "twitter", "hours", 0))
     no_listen = Confirm.ask("Exit after backfill (no live listen)?", default=bool(last(state, "twitter", "no_listen", False)))
@@ -334,6 +353,7 @@ COLLECT: dict[str, Callable[[dict], list[str]]] = {
     "review": collect_review,
     "learn": collect_learn,
     "move": collect_move,
+    "captions": collect_captions,
     "twitter": collect_twitter,
     "summarize": collect_summarize,
 }

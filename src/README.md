@@ -82,6 +82,18 @@ python src/learn_from_feedback.py
 python src/learn_from_feedback.py --album "To Delete"
 ```
 
+## Add captions
+
+Sets empty descriptions in a Photos smart album from `.cache/username_captions.txt`. Usernames missing from that file are learned from other library photos that already have a short caption (not `Author:` / `Source:`).
+
+```bash
+python src/add_captions.py
+python src/add_captions.py --dry-run
+python src/add_captions.py --album "Non-added photos"
+```
+
+`--dry-run` writes nothing: no Photos captions, no map update. A username with disagreeing library captions is left unmapped and printed.
+
 ## Twitter curator
 
 Needs `config.json` at the repo root (copy `config.example.json`). Discord bot + Message Content Intent.

@@ -14,6 +14,7 @@ THUMB_DIR = CACHE_DIR / "review_thumbs"
 SESSION_FILE = OUTPUT_DIR / "review_session.json"
 MODEL_PATH = CACHE_DIR / "aesthetic_model.pkl"
 LAUNCHER_STATE = CACHE_DIR / "launcher.json"
+USERNAME_CAPTIONS_PATH = CACHE_DIR / "username_captions.txt"
 
 
 def ensure_data_dirs() -> None:
