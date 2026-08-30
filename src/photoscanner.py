@@ -33,11 +33,12 @@ COMMON_HELP = {
     "learn": "Turn album rescues and leftover deletes into training examples.",
     "move": "Put low-scoring photos in the Photos “To Delete” album.",
     "captions": "Fill empty captions in a smart album from learned usernames.",
+    "wallpaper": "Find the current desktop wallpaper, or a screenshot, in Photos.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
     "summarize": "Write announcements_summary.txt via Apple Foundation Models.",
 }
 
-MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "twitter", "summarize")
+MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "wallpaper", "twitter", "summarize")
 MENU_LABELS = {
     "train": "Train",
     "scan": "Scan",
@@ -45,6 +46,7 @@ MENU_LABELS = {
     "learn": "Learn from feedback",
     "move": "Move to “To Delete” album",
     "captions": "Add captions",
+    "wallpaper": "Find wallpaper",
     "twitter": "Twitter curator",
     "summarize": "Summarize announcements",
 }
@@ -56,6 +58,7 @@ SCRIPTS = {
     "learn": "learn_from_feedback.py",
     "move": "move_to_album.py",
     "captions": "add_captions.py",
+    "wallpaper": "find_wallpaper.py",
     "twitter": "twitter_curator.py",
     "summarize": "summarize_announcements.py",
 }
@@ -299,6 +302,30 @@ def collect_captions(state: dict) -> list[str]:
     return extra
 
 
+def collect_wallpaper(state: dict) -> list[str]:
+    path = ask_optional_path(
+        "Screenshot path (empty = current wallpaper)",
+        last(state, "wallpaper", "image", None),
+    )
+    no_open = Confirm.ask(
+        "Skip opening Photos?",
+        default=bool(last(state, "wallpaper", "no_open", False)),
+    )
+    extra: list[str] = []
+    args: dict[str, Any] = {"image": path, "no_open": no_open}
+    if path:
+        extra.append(path)
+    if no_open:
+        extra.append("--no-open")
+    if more_options():
+        max_d = ask_int("Max dhash distance", last(state, "wallpaper", "max_distance", 15))
+        args["max_distance"] = max_d
+        if max_d != 15:
+            extra += ["--max-distance", str(max_d)]
+    put(state, "wallpaper", **args)
+    return extra
+
+
 def collect_twitter(state: dict) -> list[str]:
     hours = ask_int("Backfill hours (0 = live only)", last(state, "twitter", "hours", 0))
     no_listen = Confirm.ask("Exit after backfill (no live listen)?", default=bool(last(state, "twitter", "no_listen", False)))
@@ -354,6 +381,7 @@ COLLECT: dict[str, Callable[[dict], list[str]]] = {
     "learn": collect_learn,
     "move": collect_move,
     "captions": collect_captions,
+    "wallpaper": collect_wallpaper,
     "twitter": collect_twitter,
     "summarize": collect_summarize,
 }

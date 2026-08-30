@@ -27,7 +27,7 @@ Twitter curator: copy `config.example.json` to `config.json` and fill in the Dis
 That uses `venv` and opens a numbered menu:
 
 1. **Guided cycle** — Train → Scan → Review → Learn (skip any step)
-2. **Pick a tool** — one job (including move-to-album, captions, Twitter, summarize)
+2. **Pick a tool** — one job (including move-to-album, captions, find wallpaper, Twitter, summarize)
 
 Each job shows the equivalent `python` command, then runs it. Last dates and thresholds are remembered. After a cycle or a single tool, you are back at the shell.
 

@@ -94,6 +94,18 @@ python src/add_captions.py --album "Non-added photos"
 
 `--dry-run` writes nothing: no Photos captions, no map update. A username with disagreeing library captions is left unmapped and printed.
 
+## Find wallpaper
+
+Finds the current desktop wallpaper, or a screenshot of it, in Apple Photos. Uses the same venv (Pillow is already in `requirements.txt`). First live capture needs Screen Recording for the terminal.
+
+```bash
+python src/find_wallpaper.py
+python src/find_wallpaper.py --no-open
+python src/find_wallpaper.py ~/Desktop/Screenshot.png
+```
+
+Shell alias (from `~/.zshrc`): `image-search` and `image-search shot.png`.
+
 ## Twitter curator
 
 Needs `config.json` at the repo root (copy `config.example.json`). Discord bot + Message Content Intent.
