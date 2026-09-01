@@ -212,6 +212,13 @@
     updateSlotMarks(focusIdx);
   }
 
+  function previewPhoto(photo, { preferPhotos = false } = {}) {
+    if (!photo) return;
+    const body = { path: photo.path, uuid: photo.uuid };
+    if (preferPhotos) body.prefer_photos = true;
+    api("/api/preview", { method: "POST", body: JSON.stringify(body) });
+  }
+
   function movePhotoFocus(delta) {
     const series = focusedSeries();
     if (!series || !series.photos.length) return;
@@ -277,10 +284,7 @@
           const listIdx = series.photos.findIndex((p) => p.index === photo.index);
           if (listIdx >= 0) setPhotoFocus(listIdx, { scroll: false });
           if (ev.altKey || ev.metaKey) {
-            api("/api/preview", {
-              method: "POST",
-              body: JSON.stringify({ path: photo.path, uuid: photo.uuid }),
-            });
+            previewPhoto(photo);
             return;
           }
           togglePhotoMark(photo);
@@ -291,22 +295,12 @@
           setFocus(i);
           const listIdx = series.photos.findIndex((p) => p.index === photo.index);
           if (listIdx >= 0) setPhotoFocus(listIdx, { scroll: false });
-          api("/api/preview", {
-            method: "POST",
-            body: JSON.stringify({
-              path: photo.path,
-              uuid: photo.uuid,
-              prefer_photos: true,
-            }),
-          });
+          previewPhoto(photo, { preferPhotos: true });
         });
 
         card.addEventListener("dblclick", (ev) => {
           ev.preventDefault();
-          api("/api/preview", {
-            method: "POST",
-            body: JSON.stringify({ path: photo.path, uuid: photo.uuid }),
-          });
+          previewPhoto(photo);
         });
 
         body.appendChild(card);
@@ -545,22 +539,22 @@
     const tag = (ev.target && ev.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-    if (ev.key === "ArrowLeft") {
+    if (ev.key === "ArrowLeft" || ev.key === "h" || ev.key === "H" || ev.key === "j" || ev.key === "J" || ev.key === "k" || ev.key === "K") {
       ev.preventDefault();
       movePhotoFocus(-1);
       return;
     }
-    if (ev.key === "ArrowRight") {
+    if (ev.key === "ArrowRight" || ev.key === "l" || ev.key === "L") {
       ev.preventDefault();
       movePhotoFocus(1);
       return;
     }
-    if (ev.key === " " || ev.code === "Space") {
+    if (ev.key === " " || ev.code === "Space" || ev.key === "Enter") {
       ev.preventDefault();
       togglePhotoMark(focusedPhoto());
       return;
     }
-    if (ev.key === "Enter") {
+    if (ev.key === "i" || ev.key === "I") {
       ev.preventDefault();
       commitFocused();
       return;
@@ -578,6 +572,16 @@
     if (ev.key === "u" || ev.key === "U") {
       ev.preventDefault();
       undo();
+      return;
+    }
+    if (ev.key === "p") {
+      ev.preventDefault();
+      previewPhoto(focusedPhoto());
+      return;
+    }
+    if (ev.key === "o" || ev.key === "O") {
+      ev.preventDefault();
+      previewPhoto(focusedPhoto(), { preferPhotos: true });
       return;
     }
     if (ev.key >= "1" && ev.key <= "9") {
