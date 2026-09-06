@@ -20,6 +20,13 @@ from photo_scanner.feature_extractor import (
     FeatureExtractor,
 )
 from photo_scanner.paths import BAD_PHOTOS_DIR, CACHE_DIR, ensure_data_dirs
+from photo_scanner.thumbs import (
+    EMBED_MAX_EDGE,
+    EMBED_PREPROCESS,
+    build_uuid_to_path_index,
+    find_real_thumb_for,
+    resolve_thumb_for_uuid,
+)
 
 # Register HEIC support
 try:
@@ -65,11 +72,41 @@ def get_photo_paths(photos, desc="Getting paths"):
                 skipped += 1
     
     if skipped > 0:
-        console.print(f"[yellow]Skipped {skipped} photos (files not found)[/yellow]")
+        console.print(f"[yellow]Skipped {skipped} photos (files not found on disk)[/yellow]")
     if skipped_videos > 0:
         console.print(f"[dim]Skipped {skipped_videos} videos[/dim]")
     
     return paths
+
+
+def fill_missing_with_review_thumbs(
+    missing_uuids: set,
+    uuid_to_path: dict,
+    date_by_uuid: dict | None = None,
+) -> list[tuple]:
+    """
+    For UUIDs with no local original, use real review GUI thumbs when available.
+
+    Placeholders (missing_*.jpg) are never used. Returns (uuid, thumb_path, date).
+    """
+    from learn_from_feedback import normalize_uuid
+
+    filled = []
+    date_by_uuid = date_by_uuid or {}
+    for raw_uuid in missing_uuids:
+        uid = normalize_uuid(raw_uuid)
+        if not uid:
+            continue
+        entry = uuid_to_path.get(uid)
+        if entry:
+            scan_path, thumb_uuid = entry
+            thumb = find_real_thumb_for(uid, scan_path, thumb_uuid=thumb_uuid)
+        else:
+            thumb = resolve_thumb_for_uuid(uid, uuid_to_path)
+        if thumb is None:
+            continue
+        filled.append((uid, str(thumb), date_by_uuid.get(uid)))
+    return filled
 
 
 def get_bad_photo_paths():
@@ -119,6 +156,23 @@ def get_feedback_bad_photo_uuids():
         return set()
 
 
+def get_session_kept_uuids() -> set:
+    """UUIDs marked keep in the active review session (may not be in rescued yet)."""
+    from learn_from_feedback import normalize_uuid_set
+    from photo_scanner.paths import SESSION_FILE
+
+    if not SESSION_FILE.exists():
+        return set()
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+    except Exception:
+        return set()
+    kept = data.get("kept_from_flat") or []
+    return normalize_uuid_set(
+        p.get("uuid") for p in kept if isinstance(p, dict) and p.get("uuid")
+    )
+
+
 def load_feature_cache():
     """Load existing feature cache if available."""
     cache_file = CACHE_DIR / 'feature_cache.pkl'
@@ -165,8 +219,11 @@ def train(
     
     # Check for feedback data
     rescued_uuids = get_rescued_photo_uuids()
+    session_kept_uuids = get_session_kept_uuids()
+    positive_uuids = set(rescued_uuids) | set(session_kept_uuids)
     feedback_bad_uuids = get_feedback_bad_photo_uuids()
     has_rescued = len(rescued_uuids) > 0
+    has_session_kept = len(session_kept_uuids - rescued_uuids) > 0
     has_feedback_bad = len(feedback_bad_uuids) > 0
     
     if has_bad_photos or has_feedback_bad:
@@ -184,6 +241,11 @@ def train(
     if has_rescued:
         console.print(f"[green]📚 Found {len(rescued_uuids)} rescued photos from feedback[/green]")
         console.print("   These will be included as positive examples\n")
+    if has_session_kept:
+        console.print(
+            f"[green]📌 Found {len(session_kept_uuids - rescued_uuids)} additional "
+            f"keeps in review session[/green]\n"
+        )
     
     # Connect to Photos
     console.print("Connecting to Apple Photos...")
@@ -205,15 +267,15 @@ def train(
     
     console.print(f"[green]✓[/green] Found {len(good_photos):,} curated photos (good examples)")
     
-    # Add rescued photos to good examples
-    if has_rescued:
+    # Add rescued / session-kept photos to good examples
+    if positive_uuids:
         from learn_from_feedback import normalize_uuid
-        rescued_photos = [p for p in all_photos if normalize_uuid(p.uuid) in rescued_uuids]
+        positive_photos = [p for p in all_photos if normalize_uuid(p.uuid) in positive_uuids]
         # Filter out any already in good_photos
         existing_uuids = {normalize_uuid(p.uuid) for p in good_photos}
-        new_rescued = [p for p in rescued_photos if normalize_uuid(p.uuid) not in existing_uuids]
-        good_photos.extend(new_rescued)
-        console.print(f"[green]✓[/green] Added {len(new_rescued)} rescued photos to training")
+        new_positives = [p for p in positive_photos if normalize_uuid(p.uuid) not in existing_uuids]
+        good_photos.extend(new_positives)
+        console.print(f"[green]✓[/green] Added {len(new_positives)} rescued/session-kept photos to training")
     
     # Get feedback bad photos from Photos library
     feedback_bad_photos = []
@@ -237,14 +299,55 @@ def train(
     
     # Get file paths
     console.print("\nResolving file paths...")
+    from learn_from_feedback import normalize_uuid
+
     good_paths = get_photo_paths(good_photos, "Good photos")
-    
+    resolved_good_uuids = {normalize_uuid(u) for u, _, _ in good_paths}
+
+    # iCloud Optimize: originals often missing — fall back to real review thumbs
+    uuid_to_path = build_uuid_to_path_index()
+    date_by_uuid = {
+        normalize_uuid(p.uuid): p.date
+        for p in good_photos
+        if normalize_uuid(p.uuid)
+    }
+    # Prefer rescued/session-kept + any good photo still unresolved
+    candidates_for_thumbs = set(positive_uuids) | {
+        normalize_uuid(p.uuid) for p in good_photos if normalize_uuid(p.uuid)
+    }
+    missing_good = candidates_for_thumbs - resolved_good_uuids
+    thumb_goods = fill_missing_with_review_thumbs(
+        missing_good, uuid_to_path, date_by_uuid=date_by_uuid
+    )
+    if thumb_goods:
+        good_paths.extend(thumb_goods)
+        console.print(
+            f"[green]✓[/green] Using {len(thumb_goods):,} review thumbs as good examples "
+            f"(iCloud originals not on disk)"
+        )
+    elif missing_good:
+        console.print(
+            f"[yellow]No review thumbs found for {len(missing_good):,} missing good photos[/yellow]"
+        )
+        console.print(
+            "[dim]Tip: run Review once so .cache/review_thumbs/ has real (non-placeholder) thumbs[/dim]"
+        )
+
     # Get paths for feedback bad photos
     feedback_bad_paths = []
     if feedback_bad_photos:
-        feedback_bad_paths = get_photo_paths(feedback_bad_photos, "Feedback bad photos")
-        # Convert to just paths (not tuples)
-        feedback_bad_paths = [p[1] for p in feedback_bad_paths]
+        feedback_bad_tuples = get_photo_paths(feedback_bad_photos, "Feedback bad photos")
+        feedback_bad_paths = [p[1] for p in feedback_bad_tuples]
+        resolved_bad_uuids = {normalize_uuid(u) for u, _, _ in feedback_bad_tuples}
+        missing_bad = {
+            normalize_uuid(p.uuid) for p in feedback_bad_photos if normalize_uuid(p.uuid)
+        } - resolved_bad_uuids
+        thumb_bads = fill_missing_with_review_thumbs(missing_bad, uuid_to_path)
+        if thumb_bads:
+            feedback_bad_paths.extend(t[1] for t in thumb_bads)
+            console.print(
+                f"[red]✓[/red] Using {len(thumb_bads):,} review thumbs as bad examples"
+            )
     
     # Combine all bad photo paths
     all_bad_paths = bad_photo_paths + feedback_bad_paths
@@ -254,7 +357,19 @@ def train(
     console.print(f"  • [green]{len(good_paths):,}[/green] good photos")
     if has_any_bad:
         console.print(f"  • [red]{len(all_bad_paths):,}[/red] bad photos")
-    
+        console.print(
+            f"[dim]Full-res negatives downscale to max edge {EMBED_MAX_EDGE} "
+            f"to match review thumbs[/dim]"
+        )
+
+    if not good_paths:
+        console.print(
+            "\n[bold red]No good training images found.[/bold red]\n"
+            "Favorites/rescued need either local originals or real review thumbs "
+            "in .cache/review_thumbs/ (not missing_*.jpg placeholders)."
+        )
+        return
+
     # Load existing cache for incremental extraction
     existing_cache = load_feature_cache()
     cached_features = {}
@@ -268,6 +383,19 @@ def train(
         # Legacy EfficientNet caches have no backbone tag
         console.print(
             f"[yellow]Legacy feature cache has no backbone tag; clearing for {model_name}[/yellow]"
+        )
+        existing_cache = None
+    elif existing_cache and existing_cache.get('preprocess') not in (None, EMBED_PREPROCESS):
+        console.print(
+            f"[yellow]Embed preprocess changed "
+            f"({existing_cache.get('preprocess')} → {EMBED_PREPROCESS}); "
+            f"clearing feature cache[/yellow]"
+        )
+        existing_cache = None
+    elif existing_cache and 'preprocess' not in existing_cache:
+        console.print(
+            f"[yellow]Legacy feature cache has no preprocess tag; "
+            f"clearing for {EMBED_PREPROCESS}[/yellow]"
         )
         existing_cache = None
     if existing_cache and 'feature_cache' in existing_cache:
@@ -286,9 +414,9 @@ def train(
         console.print(f"[green]✓[/green] Cached: {good_already_cached:,} good, {bad_already_cached:,} bad")
         console.print(f"   To extract: {len(good_paths_to_extract):,} good, {len(bad_paths_to_extract):,} bad")
     
-    # Initialize feature extractor
+    # Initialize feature extractor (max_edge matches review thumbs)
     console.print("\n[bold]Initializing neural network...[/bold]")
-    extractor = FeatureExtractor(model_name=model_name)
+    extractor = FeatureExtractor(model_name=model_name, max_edge=EMBED_MAX_EDGE)
     
     # Combine all paths to extract
     all_paths_to_extract = good_paths_to_extract + bad_paths_to_extract
@@ -312,6 +440,7 @@ def train(
                     'feature_cache': cached_features,
                     'cutoff_date': cutoff_date,
                     'backbone': model_name,
+                    'preprocess': EMBED_PREPROCESS,
                 })
         
         console.print(f"[green]✓[/green] Extracted features for {len(all_paths_to_extract):,} photos")
@@ -325,6 +454,10 @@ def train(
     console.print(f"\n[green]✓[/green] Good features: {len(good_features):,}")
     if bad_features is not None and len(bad_features) > 0:
         console.print(f"[red]✓[/red] Bad features: {len(bad_features):,}")
+
+    if len(good_features) == 0:
+        console.print("[bold red]No good features extracted — cannot train.[/bold red]")
+        return
     
     # Save final feature cache
     console.print("\nSaving feature cache...")
@@ -336,6 +469,7 @@ def train(
         'feature_cache': cached_features,
         'cutoff_date': cutoff_date,
         'backbone': model_name,
+        'preprocess': EMBED_PREPROCESS,
     })
     
     # Train the model

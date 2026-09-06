@@ -19,6 +19,8 @@ from typing import List, Union, Optional
 import numpy as np
 from tqdm import tqdm
 
+from photo_scanner.thumbs import EMBED_MAX_EDGE
+
 
 # CLIP ViT-B/16: strong semantic + aesthetic features for personal taste learning.
 # 224px input stays practical on Apple Silicon (MPS) when scoring thousands of photos.
@@ -28,15 +30,23 @@ DEFAULT_BACKBONE = "vit_base_patch16_clip_224.openai"
 class FeatureExtractor:
     """Extract visual features from images using pretrained models."""
     
-    def __init__(self, model_name: str = DEFAULT_BACKBONE, device: str = None):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_BACKBONE,
+        device: str = None,
+        max_edge: Optional[int] = EMBED_MAX_EDGE,
+    ):
         """
         Initialize feature extractor.
         
         Args:
             model_name: Name of the pretrained model from timm
             device: 'cuda', 'mps', or 'cpu' (auto-detected if None)
+            max_edge: Downscale longest edge to this before model transform
+                (matches review thumbs; set None to skip)
         """
         self.model_name = model_name
+        self.max_edge = max_edge
 
         # Auto-detect device
         if device is None:
@@ -51,6 +61,8 @@ class FeatureExtractor:
         
         print(f"Using device: {self.device}")
         print(f"Backbone: {self.model_name}")
+        if self.max_edge:
+            print(f"Max edge before embed: {self.max_edge}")
         
         # Load pretrained model (num_classes=0 → embedding / pooled features)
         self.model = timm.create_model(model_name, pretrained=True, num_classes=0)
@@ -73,6 +85,9 @@ class FeatureExtractor:
         """Load and preprocess an image."""
         try:
             img = Image.open(image_path).convert('RGB')
+            if self.max_edge and max(img.size) > self.max_edge:
+                img = img.copy()
+                img.thumbnail((self.max_edge, self.max_edge), Image.Resampling.LANCZOS)
             return self.transform(img)
         except Exception as e:
             print(f"Error loading {image_path}: {e}")
