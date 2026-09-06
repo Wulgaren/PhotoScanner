@@ -15,13 +15,17 @@ Favorited photos before the cutoff are positive examples. Optional `BadPhotos/` 
 ```bash
 python src/train_model.py --cutoff-date 2023-11-18
 python src/train_model.py --cutoff-date 2023-11-18 --sample-size 200 --batch-size 32
+python src/train_model.py --cutoff-date 2023-11-18 --model vit_base_patch16_clip_224.openai
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--cutoff-date` | `2023-11-18` | Favorites before this date (YYYY-MM-DD) |
 | `--sample-size` | none | Cap training samples (testing) |
-| `--batch-size` | `32` | Feature-extraction batch size |
+| `--batch-size` | `32` | Feature-extraction batch size (try `64` on M3 Pro if memory allows) |
+| `--model` | `vit_base_patch16_clip_224.openai` | timm backbone for embeddings (CLIP ViT-B/16) |
+
+Changing `--model` clears the feature cache and requires a full re-extract + retrain.
 
 ## Scan
 
@@ -38,6 +42,7 @@ python src/scan_photos.py --after 2023-11-18 --threshold 0.3 --batch-size 32 --l
 | `--threshold` | `0.3` | Suggest deletion below this score |
 | `--batch-size` | `32` | Feature-extraction batch size |
 | `--limit` | none | Cap how many photos to scan |
+| `--model` | `vit_base_patch16_clip_224.openai` | Must match the backbone used for Train |
 
 Writes `output/scan_results_*.json` and a text suggestion list.
 

@@ -1,10 +1,9 @@
 """
-Feature extraction using pretrained CNN models.
+Feature extraction using pretrained CNN/ViT models.
 Extracts visual embeddings from photos for similarity comparison and classification.
 """
 
 import torch
-from torchvision import transforms
 from PIL import Image
 
 # Register HEIC support
@@ -14,16 +13,22 @@ try:
 except ImportError:
     pass
 import timm
+from timm.data import resolve_model_data_config, create_transform
 from pathlib import Path
 from typing import List, Union, Optional
 import numpy as np
 from tqdm import tqdm
 
 
+# CLIP ViT-B/16: strong semantic + aesthetic features for personal taste learning.
+# 224px input stays practical on Apple Silicon (MPS) when scoring thousands of photos.
+DEFAULT_BACKBONE = "vit_base_patch16_clip_224.openai"
+
+
 class FeatureExtractor:
     """Extract visual features from images using pretrained models."""
     
-    def __init__(self, model_name: str = 'efficientnet_b0', device: str = None):
+    def __init__(self, model_name: str = DEFAULT_BACKBONE, device: str = None):
         """
         Initialize feature extractor.
         
@@ -31,6 +36,8 @@ class FeatureExtractor:
             model_name: Name of the pretrained model from timm
             device: 'cuda', 'mps', or 'cpu' (auto-detected if None)
         """
+        self.model_name = model_name
+
         # Auto-detect device
         if device is None:
             if torch.cuda.is_available():
@@ -43,24 +50,17 @@ class FeatureExtractor:
             self.device = device
         
         print(f"Using device: {self.device}")
+        print(f"Backbone: {self.model_name}")
         
-        # Load pretrained model
+        # Load pretrained model (num_classes=0 → embedding / pooled features)
         self.model = timm.create_model(model_name, pretrained=True, num_classes=0)
         self.model = self.model.to(self.device)
         self.model.eval()
         
-        # Get model's expected input size
-        self.input_size = self.model.default_cfg.get('input_size', (3, 224, 224))[-1]
-        
-        # Define preprocessing
-        self.transform = transforms.Compose([
-            transforms.Resize((self.input_size, self.input_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
+        # Model-specific preprocessing (CLIP uses different mean/std than ImageNet CNNs)
+        data_config = resolve_model_data_config(self.model)
+        self.transform = create_transform(**data_config, is_training=False)
+        self.input_size = data_config.get('input_size', (3, 224, 224))[-1]
         
         # Get feature dimension
         with torch.no_grad():
@@ -136,6 +136,7 @@ class AestheticScorer:
     
     def __init__(self, feature_extractor: FeatureExtractor):
         self.feature_extractor = feature_extractor
+        self.backbone = feature_extractor.model_name
         self.model = None
         self.scaler = None
         self.is_one_class = True
@@ -205,6 +206,8 @@ class AestheticScorer:
                 'model': self.model,
                 'scaler': self.scaler,
                 'is_one_class': self.is_one_class,
+                'backbone': self.backbone,
+                'feature_dim': self.feature_extractor.feature_dim,
             }, f)
         print(f"Model saved to {path}")
     
@@ -213,7 +216,21 @@ class AestheticScorer:
         import pickle
         with open(path, 'rb') as f:
             data = pickle.load(f)
+        saved_backbone = data.get('backbone')
+        if saved_backbone and saved_backbone != self.feature_extractor.model_name:
+            raise ValueError(
+                f"Preference model was trained with backbone '{saved_backbone}', "
+                f"but extractor is '{self.feature_extractor.model_name}'. "
+                f"Retrain with ./photoscanner.sh (Train)."
+            )
+        saved_dim = data.get('feature_dim')
+        if saved_dim is not None and saved_dim != self.feature_extractor.feature_dim:
+            raise ValueError(
+                f"Preference model feature dim {saved_dim} does not match "
+                f"extractor dim {self.feature_extractor.feature_dim}. Retrain."
+            )
         self.model = data['model']
         self.scaler = data['scaler']
         self.is_one_class = data.get('is_one_class', True)  # Default to one-class for old models
+        self.backbone = saved_backbone or self.feature_extractor.model_name
         print(f"Model loaded from {path}")

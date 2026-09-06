@@ -15,7 +15,11 @@ from tqdm import tqdm
 import pickle
 import json
 
-from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.feature_extractor import (
+    DEFAULT_BACKBONE,
+    AestheticScorer,
+    FeatureExtractor,
+)
 from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
 
 # Register HEIC support
@@ -37,7 +41,8 @@ ensure_data_dirs()
 
 
 def scan(after_date: datetime, score_threshold: float = 0.3,
-         batch_size: int = 32, limit: int = None):
+         batch_size: int = 32, limit: int = None,
+         model_name: str = DEFAULT_BACKBONE):
     """
     Scan photos after the given date and suggest deletions.
     
@@ -46,6 +51,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         score_threshold: Suggest deletion for photos below this score
         batch_size: Batch size for feature extraction
         limit: Limit number of photos to scan (for testing)
+        model_name: timm backbone (must match the trained preference model)
     """
     console.print("\n[bold blue]📸 PhotoScanner - Photo Analysis[/bold blue]\n")
     
@@ -57,7 +63,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     
     # Initialize
     console.print("Loading model...")
-    extractor = FeatureExtractor(model_name='efficientnet_b0')
+    extractor = FeatureExtractor(model_name=model_name)
     scorer = AestheticScorer(extractor)
     scorer.load(model_path)
     
@@ -267,6 +273,8 @@ def main():
                        help='Batch size for feature extraction')
     parser.add_argument('--limit', type=int, default=None,
                        help='Limit number of photos to scan (for testing)')
+    parser.add_argument('--model', type=str, default=DEFAULT_BACKBONE,
+                       help=f'timm backbone (must match training; default: {DEFAULT_BACKBONE})')
     
     args = parser.parse_args()
     
@@ -277,7 +285,8 @@ def main():
             after_date=after,
             score_threshold=args.threshold,
             batch_size=args.batch_size,
-            limit=args.limit
+            limit=args.limit,
+            model_name=args.model,
         )
     except Exception as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")

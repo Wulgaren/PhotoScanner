@@ -39,4 +39,6 @@ Each job shows the equivalent `python` command, then runs it. Last dates and thr
 - Learns from what you rescue vs leave in “To Delete”
 - Optional Twitter/X curator via Discord
 
+Preference embeddings use **CLIP ViT-B/16** (`vit_base_patch16_clip_224.openai`) via `timm` — strong for personal taste, and practical on Apple Silicon (MPS) when training on thousands of photos. After upgrading, re-run Train once so features and `.cache/aesthetic_model.pkl` match the new backbone.
+
 Scripts, flags, and internals: [`src/README.md`](src/README.md).

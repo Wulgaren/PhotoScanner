@@ -14,7 +14,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from tqdm import tqdm
 import pickle
 
-from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.feature_extractor import (
+    DEFAULT_BACKBONE,
+    AestheticScorer,
+    FeatureExtractor,
+)
 from photo_scanner.paths import BAD_PHOTOS_DIR, CACHE_DIR, ensure_data_dirs
 
 # Register HEIC support
@@ -134,7 +138,12 @@ def save_feature_cache(cache_data):
         pickle.dump(cache_data, f)
 
 
-def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
+def train(
+    cutoff_date: datetime,
+    sample_size: int = None,
+    batch_size: int = 32,
+    model_name: str = DEFAULT_BACKBONE,
+):
     """
     Train the model on curated photos.
     
@@ -145,8 +154,10 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
         cutoff_date: Photos before this date are considered training data
         sample_size: Limit training samples (None = use all)
         batch_size: Batch size for feature extraction
+        model_name: timm backbone for visual embeddings
     """
     console.print("\n[bold blue]📸 PhotoScanner - Model Training[/bold blue]\n")
+    console.print(f"[dim]Backbone: {model_name}[/dim]")
     
     # Check for BadPhotos folder
     bad_photo_paths = get_bad_photo_paths()
@@ -247,6 +258,18 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
     # Load existing cache for incremental extraction
     existing_cache = load_feature_cache()
     cached_features = {}
+    if existing_cache and existing_cache.get('backbone') not in (None, model_name):
+        console.print(
+            f"[yellow]Backbone changed "
+            f"({existing_cache.get('backbone')} → {model_name}); clearing feature cache[/yellow]"
+        )
+        existing_cache = None
+    elif existing_cache and 'backbone' not in existing_cache:
+        # Legacy EfficientNet caches have no backbone tag
+        console.print(
+            f"[yellow]Legacy feature cache has no backbone tag; clearing for {model_name}[/yellow]"
+        )
+        existing_cache = None
     if existing_cache and 'feature_cache' in existing_cache:
         cached_features = existing_cache.get('feature_cache', {})
         console.print(f"[dim]Loaded {len(cached_features):,} cached features[/dim]")
@@ -265,7 +288,7 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
     
     # Initialize feature extractor
     console.print("\n[bold]Initializing neural network...[/bold]")
-    extractor = FeatureExtractor(model_name='efficientnet_b0')
+    extractor = FeatureExtractor(model_name=model_name)
     
     # Combine all paths to extract
     all_paths_to_extract = good_paths_to_extract + bad_paths_to_extract
@@ -288,6 +311,7 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
                 save_feature_cache({
                     'feature_cache': cached_features,
                     'cutoff_date': cutoff_date,
+                    'backbone': model_name,
                 })
         
         console.print(f"[green]✓[/green] Extracted features for {len(all_paths_to_extract):,} photos")
@@ -311,6 +335,7 @@ def train(cutoff_date: datetime, sample_size: int = None, batch_size: int = 32):
         'bad_features': bad_features,
         'feature_cache': cached_features,
         'cutoff_date': cutoff_date,
+        'backbone': model_name,
     })
     
     # Train the model
@@ -354,6 +379,8 @@ def main():
                        help='Limit number of training samples (for testing)')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for feature extraction')
+    parser.add_argument('--model', type=str, default=DEFAULT_BACKBONE,
+                       help=f'timm backbone for embeddings (default: {DEFAULT_BACKBONE})')
     
     args = parser.parse_args()
     
@@ -363,7 +390,8 @@ def main():
         train(
             cutoff_date=cutoff,
             sample_size=args.sample_size,
-            batch_size=args.batch_size
+            batch_size=args.batch_size,
+            model_name=args.model,
         )
     except Exception as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")
