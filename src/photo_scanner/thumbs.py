@@ -146,3 +146,53 @@ def resolve_thumb_for_uuid(
         return None
     path, thumb_uuid = entry
     return find_real_thumb_for(uid, path, thumb_uuid=thumb_uuid)
+
+
+def resolve_scorable_image(
+    uuid: str | None,
+    *,
+    path: str | None = None,
+    path_edited: str | None = None,
+    uuid_to_path: dict[str, tuple[str, str]] | None = None,
+) -> tuple[str, str, str] | None:
+    """
+    Prefer on-disk original/edited; else a real review thumb.
+
+    Returns (score_path, library_path, source) where:
+      - score_path: readable file to embed / phash
+      - library_path: path to store in scan JSON (library path when known,
+        so review_gui can find the same thumb via sha1(path|uuid|900))
+      - source: 'original' | 'edited' | 'thumb'
+    """
+    for candidate, source in ((path, "original"), (path_edited, "edited")):
+        if candidate and Path(candidate).is_file():
+            return candidate, candidate, source
+
+    uid = _normalize_uuid(uuid)
+    index = uuid_to_path
+    if index is None and uid:
+        index = build_uuid_to_path_index()
+    entry = index.get(uid) if (index and uid) else None
+    # Prefer the uuid string that was hashed when the thumb was created
+    thumb_uuid_hint = entry[1] if entry else uuid
+
+    # Thumb keyed by Photos path strings even when the files are cloud-only
+    for candidate in (path, path_edited):
+        if not candidate:
+            continue
+        thumb = find_real_thumb_for(uuid, candidate, thumb_uuid=thumb_uuid_hint)
+        if thumb is not None:
+            return str(thumb), candidate, "thumb"
+
+    # Prior scan/session path → thumb
+    if entry:
+        lib_path, thumb_uuid = entry
+        thumb = find_real_thumb_for(uid, lib_path, thumb_uuid=thumb_uuid)
+        if thumb is not None:
+            return str(thumb), lib_path, "thumb"
+    elif uid and index is not None:
+        thumb = resolve_thumb_for_uuid(uid, index)
+        if thumb is not None:
+            return str(thumb), str(thumb), "thumb"
+
+    return None

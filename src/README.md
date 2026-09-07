@@ -46,6 +46,8 @@ python src/scan_photos.py --after 2023-11-18 --threshold 0.3 --batch-size 32 --l
 | `--limit` | none | Cap how many photos to scan |
 | `--model` | `vit_base_patch16_clip_224.openai` | Must match the backbone used for Train |
 
+**iCloud Optimize:** Scan includes favorites even when Photos marks them `ismissing`. Local originals/edited win when present; otherwise a real review thumb is scored (same helpers as Train). JSON `path` keeps the library path when known so Review can reopen the same thumb key. pHash runs on the readable file (thumb OK; failure → no phash, series still uses embeddings/time).
+
 Writes `output/scan_results_*.json` and a text suggestion list.
 
 ## Review (browser)
