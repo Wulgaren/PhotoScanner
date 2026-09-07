@@ -25,6 +25,7 @@ from photo_scanner.thumbs import (
     EMBED_PREPROCESS,
     build_uuid_to_path_index,
     find_real_thumb_for,
+    resolve_scorable_image,
     resolve_thumb_for_uuid,
 )
 
@@ -47,35 +48,71 @@ RESCUED_PHOTOS_FILE = CACHE_DIR / 'rescued_photos.json'
 
 
 def get_photo_paths(photos, desc="Getting paths"):
-    """Get file paths for photos, handling both original and edited versions."""
+    """Resolve readable paths: original/edited, Photos derivatives, else review thumbs."""
     paths = []
     skipped = 0
     skipped_videos = 0
-    
+    used_derivatives = 0
+    used_thumbs = 0
+    uuid_to_path = build_uuid_to_path_index()
+
     for photo in tqdm(photos, desc=desc):
-        # Try to get the path
         path = photo.path
-        if path and Path(path).exists():
-            # Skip videos
-            if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
-                skipped_videos += 1
-                continue
-            paths.append((photo.uuid, path, photo.date))
-        else:
-            # Try edited version
-            if photo.path_edited and Path(photo.path_edited).exists():
-                if Path(photo.path_edited).suffix.lower() in VIDEO_EXTENSIONS:
-                    skipped_videos += 1
-                    continue
-                paths.append((photo.uuid, photo.path_edited, photo.date))
-            else:
-                skipped += 1
-    
+        path_edited = photo.path_edited
+        if path and Path(path).suffix.lower() in VIDEO_EXTENSIONS and not (
+            path_edited and Path(path_edited).suffix.lower() not in VIDEO_EXTENSIONS
+        ):
+            skipped_videos += 1
+            continue
+
+        try:
+            derivs = list(photo.path_derivatives or [])
+        except Exception:
+            derivs = []
+
+        resolved = resolve_scorable_image(
+            photo.uuid,
+            path=path if path and Path(path).suffix.lower() not in VIDEO_EXTENSIONS else None,
+            path_edited=(
+                path_edited
+                if path_edited and Path(path_edited).suffix.lower() not in VIDEO_EXTENSIONS
+                else None
+            ),
+            derivatives=derivs,
+            uuid_to_path=uuid_to_path,
+        )
+        if resolved is None:
+            skipped += 1
+            continue
+
+        score_path, _library_path, source = resolved
+        if Path(score_path).suffix.lower() in VIDEO_EXTENSIONS:
+            skipped_videos += 1
+            continue
+        if source == "derivative":
+            used_derivatives += 1
+        elif source == "thumb":
+            used_thumbs += 1
+        paths.append((photo.uuid, score_path, photo.date))
+
     if skipped > 0:
-        console.print(f"[yellow]Skipped {skipped} photos (files not found on disk)[/yellow]")
+        console.print(
+            f"[yellow]Skipped {skipped} photos "
+            f"(no local original, derivative, or real thumb)[/yellow]"
+        )
+    if used_derivatives:
+        console.print(
+            f"[green]✓[/green] Using {used_derivatives:,} Photos derivatives "
+            f"(iCloud originals not on disk)"
+        )
+    if used_thumbs:
+        console.print(
+            f"[green]✓[/green] Using {used_thumbs:,} review thumbs "
+            f"(iCloud originals not on disk)"
+        )
     if skipped_videos > 0:
         console.print(f"[dim]Skipped {skipped_videos} videos[/dim]")
-    
+
     return paths
 
 
@@ -257,12 +294,11 @@ def train(
     
     all_photos = photosdb.photos()
     
-    # Only use favorited photos as positive training examples
+    # Favorites as positive examples (ismissing OK — derivatives / thumbs resolve later)
     good_photos = [
         p for p in all_photos 
         if p.favorite and p.date and p.date < cutoff_date
         and not p.screenshot  # Exclude screenshots
-        and not p.ismissing
     ]
     
     console.print(f"[green]✓[/green] Found {len(good_photos):,} curated photos (good examples)")
@@ -283,7 +319,7 @@ def train(
         from learn_from_feedback import normalize_uuid
         feedback_bad_photos = [
             p for p in all_photos
-            if normalize_uuid(p.uuid) in feedback_bad_uuids and not p.ismissing
+            if normalize_uuid(p.uuid) in feedback_bad_uuids
         ]
         console.print(f"[red]✓[/red] Found {len(feedback_bad_photos)} feedback bad photos in library")
     
@@ -365,8 +401,8 @@ def train(
     if not good_paths:
         console.print(
             "\n[bold red]No good training images found.[/bold red]\n"
-            "Favorites/rescued need either local originals or real review thumbs "
-            "in .cache/review_thumbs/ (not missing_*.jpg placeholders)."
+            "Favorites/rescued need local originals, Photos derivatives, or real "
+            "review thumbs in .cache/review_thumbs/ (not missing_*.jpg placeholders)."
         )
         return
 

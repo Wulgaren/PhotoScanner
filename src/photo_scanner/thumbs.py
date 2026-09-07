@@ -148,25 +148,48 @@ def resolve_thumb_for_uuid(
     return find_real_thumb_for(uid, path, thumb_uuid=thumb_uuid)
 
 
+def pick_largest_readable(paths: Iterable[str | Path | None]) -> Path | None:
+    """Return the largest existing file among paths, or None."""
+    best: Path | None = None
+    best_size = -1
+    for raw in paths:
+        if not raw:
+            continue
+        candidate = Path(raw)
+        if not candidate.is_file():
+            continue
+        size = candidate.stat().st_size
+        if size > best_size:
+            best = candidate
+            best_size = size
+    return best
+
+
 def resolve_scorable_image(
     uuid: str | None,
     *,
     path: str | None = None,
     path_edited: str | None = None,
+    derivatives: Iterable[str | Path | None] | None = None,
     uuid_to_path: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[str, str, str] | None:
     """
-    Prefer on-disk original/edited; else a real review thumb.
+    Prefer on-disk original/edited; else largest Photos derivative; else review thumb.
 
     Returns (score_path, library_path, source) where:
       - score_path: readable file to embed / phash
       - library_path: path to store in scan JSON (library path when known,
         so review_gui can find the same thumb via sha1(path|uuid|900))
-      - source: 'original' | 'edited' | 'thumb'
+      - source: 'original' | 'edited' | 'derivative' | 'thumb'
     """
     for candidate, source in ((path, "original"), (path_edited, "edited")):
         if candidate and Path(candidate).is_file():
             return candidate, candidate, source
+
+    deriv = pick_largest_readable(derivatives or ())
+    if deriv is not None:
+        library_path = path or path_edited or str(deriv)
+        return str(deriv), library_path, "derivative"
 
     uid = _normalize_uuid(uuid)
     index = uuid_to_path

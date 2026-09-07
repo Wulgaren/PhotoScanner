@@ -105,11 +105,12 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         photos_to_scan = photos_to_scan[:limit]
         console.print(f"  (Limited to {limit} for testing)")
     
-    # Resolve readable images: local original/edited, else real review thumbs
+    # Resolve readable images: original/edited, Photos derivatives, else review thumbs
     console.print("\nResolving file paths...")
     uuid_to_path = build_uuid_to_path_index()
     photo_data = []
     skipped_videos = 0
+    used_derivatives = 0
     used_thumbs = 0
     unresolved = 0
     for photo in tqdm(photos_to_scan, desc="Getting paths"):
@@ -120,10 +121,16 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
             skipped_videos += 1
             continue
 
+        try:
+            derivs = list(photo.path_derivatives or [])
+        except Exception:
+            derivs = []
+
         resolved = resolve_scorable_image(
             photo.uuid,
             path=photo.path if not _is_video_path(photo.path) else None,
             path_edited=photo.path_edited if not _is_video_path(photo.path_edited) else None,
+            derivatives=derivs,
             uuid_to_path=uuid_to_path,
         )
         if resolved is None:
@@ -134,7 +141,9 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         if source in ("original", "edited") and _is_video_path(score_path):
             skipped_videos += 1
             continue
-        if source == "thumb":
+        if source == "derivative":
+            used_derivatives += 1
+        elif source == "thumb":
             used_thumbs += 1
 
         photo_data.append({
@@ -148,6 +157,11 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     
     if skipped_videos > 0:
         console.print(f"[dim]Skipped {skipped_videos} videos[/dim]")
+    if used_derivatives:
+        console.print(
+            f"[green]✓[/green] Using {used_derivatives:,} Photos derivatives "
+            f"(iCloud originals not on disk)"
+        )
     if used_thumbs:
         console.print(
             f"[green]✓[/green] Using {used_thumbs:,} review thumbs "
@@ -155,7 +169,8 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         )
     if unresolved:
         console.print(
-            f"[yellow]Skipped {unresolved:,} photos with no local file and no real thumb[/yellow]"
+            f"[yellow]Skipped {unresolved:,} photos with no local original, "
+            f"derivative, or real thumb[/yellow]"
         )
     
     console.print(f"[green]✓[/green] Found {len(photo_data):,} scorable photos")
@@ -163,8 +178,8 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     if not photo_data:
         console.print("[yellow]No photos to scan.[/yellow]")
         console.print(
-            "[dim]Tip: run Review once so .cache/review_thumbs/ has real "
-            "(non-placeholder) thumbs for cloud-only favorites[/dim]"
+            "[dim]Tip: Photos needs local derivatives (or Review thumbs) for "
+            "cloud-only favorites[/dim]"
         )
         return
     

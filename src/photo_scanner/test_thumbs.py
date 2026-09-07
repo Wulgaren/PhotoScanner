@@ -152,3 +152,52 @@ def test_resolve_scorable_skips_placeholder_only(tmp_path, monkeypatch):
         path="/gone.jpg",
     )
     assert result is None
+
+
+def test_resolve_scorable_picks_largest_derivative(tmp_path, monkeypatch):
+    monkeypatch.setattr(th, "THUMB_DIR", tmp_path / "thumbs")
+    monkeypatch.setattr(th, "OUTPUT_DIR", tmp_path / "out")
+    monkeypatch.setattr(th, "SESSION_FILE", tmp_path / "out" / "session.json")
+    (tmp_path / "thumbs").mkdir()
+    (tmp_path / "out").mkdir()
+
+    small = tmp_path / "small.jpeg"
+    large = tmp_path / "large.jpeg"
+    small.write_bytes(b"x" * 100)
+    large.write_bytes(b"y" * 5000)
+    uuid = "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD"
+    lib_path = "/Photos/originals/D/cloud-only.jpg"
+
+    result = th.resolve_scorable_image(
+        uuid,
+        path=lib_path,
+        derivatives=[str(small), str(large)],
+    )
+    assert result is not None
+    score_path, library_path, source = result
+    assert source == "derivative"
+    assert score_path == str(large)
+    assert library_path == lib_path
+
+
+def test_resolve_scorable_prefers_original_over_derivative(tmp_path, monkeypatch):
+    monkeypatch.setattr(th, "THUMB_DIR", tmp_path / "thumbs")
+    monkeypatch.setattr(th, "OUTPUT_DIR", tmp_path / "out")
+    monkeypatch.setattr(th, "SESSION_FILE", tmp_path / "out" / "session.json")
+    (tmp_path / "thumbs").mkdir()
+    (tmp_path / "out").mkdir()
+
+    original = tmp_path / "original.jpg"
+    original.write_bytes(b"orig")
+    deriv = tmp_path / "deriv.jpeg"
+    deriv.write_bytes(b"z" * 9000)
+    uuid = "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"
+
+    result = th.resolve_scorable_image(
+        uuid,
+        path=str(original),
+        derivatives=[str(deriv)],
+    )
+    assert result is not None
+    assert result[2] == "original"
+    assert result[0] == str(original)
