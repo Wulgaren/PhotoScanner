@@ -2,8 +2,8 @@
 
 extract_username strips the extension and an optional leading NN- prefix,
 then isolates a handle via date, unix-timestamp, space, or media-token delimiters.
-Handles may start with a digit but must contain a letter. Returns None if
-isolation is unclear (IMG_1234, image0, no delimiter).
+Handles may start with a digit or underscore but must contain a letter. Returns
+None if isolation is unclear (IMG_1234, image0, no delimiter).
 """
 
 from collections import Counter, defaultdict
@@ -38,8 +38,8 @@ def extract_username(filename: str) -> str | None:
     if m:
         return _valid_username(m.group(1))
 
-    # twitter media token, optional _N frame suffix
-    m = re.match(r"^(.+)_([A-Za-z0-9]{10,})(?:_\d+)?$", stem)
+    # twitter media token (alnum / _ / -), optional _N frame suffix
+    m = re.match(r"^(.+)_([A-Za-z0-9_-]{10,})(?:_\d+)?$", stem)
     if m and re.search(r"[A-Z]", m.group(2)) and re.search(r"[a-z]", m.group(2)):
         return _valid_username(m.group(1))
 
@@ -49,7 +49,7 @@ def extract_username(filename: str) -> str | None:
 def _valid_username(token: str) -> str | None:
     if not token or token.lower() in _GENERIC:
         return None
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.]*", token):
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.]*", token):
         return None
     if not re.search(r"[A-Za-z]", token):
         return None
@@ -194,6 +194,12 @@ if __name__ == "__main__":
     assert extract_username("10ve.xx_1733585670_3517894033408699610_8443250103.jpg") == "10ve.xx"
     assert extract_username("01-8t8ear-20260817_142403-902476507.jpg") == "8t8ear"
     assert extract_username("8t8ear_DceSMYeEpyx_2.jpg") == "8t8ear"
+    assert extract_username("_IUofficial_HRnzB-rasAAEieq.jpg") == "_IUofficial"
+    assert extract_username("_IUofficial_HRnzB_Ia4AAviMn.jpg") == "_IUofficial"
+    assert extract_username("_IUofficial 2025-01-25T104229 1.jpeg") == "_IUofficial"
+    assert extract_username("aespapic_HRq8p_oWgAAgwIf.jpg") == "aespapic"
+    assert extract_username("01-__chappy___-20260907_151455-336796402.jpg") == "__chappy___"
+    assert extract_username("__chappy___ 2025-01-06T132841-1.jpeg") == "__chappy___"
     assert extract_username("IMG_1234.jpg") is None
     assert extract_username("image0.jpg") is None
 
