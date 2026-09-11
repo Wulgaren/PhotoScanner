@@ -16,7 +16,11 @@ from io import BytesIO
 import hashlib
 import piexif
 
-from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.feature_extractor import (
+    DEFAULT_BACKBONE,
+    AestheticScorer,
+    FeatureExtractor,
+)
 from photo_scanner.paths import CACHE_DIR, CONFIG_PATH, MODEL_PATH, ensure_data_dirs
 
 # Register HEIC support
@@ -90,7 +94,7 @@ class ImageScorer:
             return False
         
         print("Loading aesthetic model...")
-        self.extractor = FeatureExtractor(model_name='efficientnet_b0')
+        self.extractor = FeatureExtractor(model_name=DEFAULT_BACKBONE)
         self.scorer = AestheticScorer(self.extractor)
         self.scorer.load(MODEL_PATH)
         self.loaded = True

@@ -38,12 +38,12 @@ from photo_scanner.paths import (
     THUMB_DIR,
     ensure_data_dirs,
 )
+from photo_scanner.thumbs import THUMB_MAX
 
 console = Console()
 
 ensure_data_dirs()
 SLOTS = 1
-THUMB_MAX = 900
 THRESHOLD_CAP = 0.9
 THRESHOLD_STEP = 0.1
 PREMARK_MARGIN = 0.1

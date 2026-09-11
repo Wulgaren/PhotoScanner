@@ -15,13 +15,19 @@ Favorited photos before the cutoff are positive examples. Optional `BadPhotos/` 
 ```bash
 python src/train_model.py --cutoff-date 2023-11-18
 python src/train_model.py --cutoff-date 2023-11-18 --sample-size 200 --batch-size 32
+python src/train_model.py --cutoff-date 2023-11-18 --model vit_base_patch16_clip_224.openai
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--cutoff-date` | `2023-11-18` | Favorites before this date (YYYY-MM-DD) |
 | `--sample-size` | none | Cap training samples (testing) |
-| `--batch-size` | `32` | Feature-extraction batch size |
+| `--batch-size` | `32` | Feature-extraction batch size (try `64` on M3 Pro if memory allows) |
+| `--model` | `vit_base_patch16_clip_224.openai` | timm backbone for embeddings (CLIP ViT-B/16) |
+
+Changing `--model` clears the feature cache and requires a full re-extract + retrain.
+
+**iCloud Optimize / no originals on disk:** Train still prefers local originals when present. If a good photo’s file is missing, it looks up the UUID in `output/scan_results_*.json` / `output/review_session.json`, then uses a real thumb from `.cache/review_thumbs/` (`sha1(path|uuid|900).jpg`). Placeholder `missing_*.jpg` thumbs are excluded. BadPhotos and other full-res negatives are downscaled to max edge 900 before CLIP so they match thumb sharpness. Feature cache key includes `preprocess=max_edge_900` — old caches are cleared automatically.
 
 ## Scan
 
@@ -38,6 +44,9 @@ python src/scan_photos.py --after 2023-11-18 --threshold 0.3 --batch-size 32 --l
 | `--threshold` | `0.3` | Suggest deletion below this score |
 | `--batch-size` | `32` | Feature-extraction batch size |
 | `--limit` | none | Cap how many photos to scan |
+| `--model` | `vit_base_patch16_clip_224.openai` | Must match the backbone used for Train |
+
+**iCloud Optimize:** Scan includes favorites even when Photos marks them `ismissing`. Local originals/edited win when present; otherwise a real review thumb is scored (same helpers as Train). JSON `path` keeps the library path when known so Review can reopen the same thumb key. pHash runs on the readable file (thumb OK; failure → no phash, series still uses embeddings/time).
 
 Writes `output/scan_results_*.json` and a text suggestion list.
 

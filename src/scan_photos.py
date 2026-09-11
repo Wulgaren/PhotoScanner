@@ -15,8 +15,17 @@ from tqdm import tqdm
 import pickle
 import json
 
-from photo_scanner.feature_extractor import FeatureExtractor, AestheticScorer
+from photo_scanner.feature_extractor import (
+    DEFAULT_BACKBONE,
+    AestheticScorer,
+    FeatureExtractor,
+)
 from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
+from photo_scanner.thumbs import (
+    EMBED_MAX_EDGE,
+    build_uuid_to_path_index,
+    resolve_scorable_image,
+)
 
 # Register HEIC support
 try:
@@ -36,8 +45,15 @@ console = Console()
 ensure_data_dirs()
 
 
+def _is_video_path(path: str | None) -> bool:
+    if not path:
+        return False
+    return Path(path).suffix.lower() in VIDEO_EXTENSIONS
+
+
 def scan(after_date: datetime, score_threshold: float = 0.3,
-         batch_size: int = 32, limit: int = None):
+         batch_size: int = 32, limit: int = None,
+         model_name: str = DEFAULT_BACKBONE):
     """
     Scan photos after the given date and suggest deletions.
     
@@ -46,6 +62,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         score_threshold: Suggest deletion for photos below this score
         batch_size: Batch size for feature extraction
         limit: Limit number of photos to scan (for testing)
+        model_name: timm backbone (must match the trained preference model)
     """
     console.print("\n[bold blue]📸 PhotoScanner - Photo Analysis[/bold blue]\n")
     
@@ -55,9 +72,9 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         console.print("[red]Error: Model not found. Run ./photoscanner.sh (Train) first.[/red]")
         return
     
-    # Initialize
+    # Initialize (max_edge matches training / review thumbs)
     console.print("Loading model...")
-    extractor = FeatureExtractor(model_name='efficientnet_b0')
+    extractor = FeatureExtractor(model_name=model_name, max_edge=EMBED_MAX_EDGE)
     scorer = AestheticScorer(extractor)
     scorer.load(model_path)
     
@@ -65,7 +82,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     console.print("Connecting to Apple Photos...")
     photosdb = osxphotos.PhotosDB()
     
-    # Get photos to scan
+    # Get photos to scan — include ismissing (iCloud Optimize); resolve thumbs later
     console.print(f"Finding favorited photos after {after_date.strftime('%Y-%m-%d')}...")
     
     all_photos = photosdb.photos()
@@ -74,62 +91,120 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         if p.favorite 
         and p.date and p.date >= after_date
         and not p.screenshot
-        and not p.ismissing
     ]
+    missing_marked = sum(1 for p in photos_to_scan if getattr(p, "ismissing", False))
     
-    console.print(f"[green]✓[/green] Found {len(photos_to_scan):,} photos to analyze")
+    console.print(f"[green]✓[/green] Found {len(photos_to_scan):,} favorited photos to consider")
+    if missing_marked:
+        console.print(
+            f"[dim]{missing_marked:,} marked ismissing by Photos "
+            f"(will use review thumbs when available)[/dim]"
+        )
     
     if limit:
         photos_to_scan = photos_to_scan[:limit]
         console.print(f"  (Limited to {limit} for testing)")
     
-    # Get file paths
+    # Resolve readable images: original/edited, Photos derivatives, else review thumbs
     console.print("\nResolving file paths...")
+    uuid_to_path = build_uuid_to_path_index()
     photo_data = []
     skipped_videos = 0
+    used_derivatives = 0
+    used_thumbs = 0
+    unresolved = 0
     for photo in tqdm(photos_to_scan, desc="Getting paths"):
-        path = photo.path
-        if not path or not Path(path).exists():
-            path = photo.path_edited
-        if path and Path(path).exists():
-            # Skip videos
-            if Path(path).suffix.lower() in VIDEO_EXTENSIONS:
-                skipped_videos += 1
-                continue
-            photo_data.append({
-                'uuid': photo.uuid,
-                'path': path,
-                'date': photo.date,
-                'filename': photo.filename,
-            })
+        # Skip obvious videos when the Photos path is a video file
+        if _is_video_path(photo.path) and not (
+            photo.path_edited and not _is_video_path(photo.path_edited)
+        ):
+            skipped_videos += 1
+            continue
+
+        try:
+            derivs = list(photo.path_derivatives or [])
+        except Exception:
+            derivs = []
+
+        resolved = resolve_scorable_image(
+            photo.uuid,
+            path=photo.path if not _is_video_path(photo.path) else None,
+            path_edited=photo.path_edited if not _is_video_path(photo.path_edited) else None,
+            derivatives=derivs,
+            uuid_to_path=uuid_to_path,
+        )
+        if resolved is None:
+            unresolved += 1
+            continue
+
+        score_path, library_path, source = resolved
+        if source in ("original", "edited") and _is_video_path(score_path):
+            skipped_videos += 1
+            continue
+        if source == "derivative":
+            used_derivatives += 1
+        elif source == "thumb":
+            used_thumbs += 1
+
+        photo_data.append({
+            'uuid': photo.uuid,
+            'path': library_path,       # for scan JSON / review_gui thumb keys
+            'score_path': score_path,   # readable file for CLIP + phash
+            'date': photo.date,
+            'filename': photo.filename,
+            'source': source,
+        })
     
     if skipped_videos > 0:
         console.print(f"[dim]Skipped {skipped_videos} videos[/dim]")
+    if used_derivatives:
+        console.print(
+            f"[green]✓[/green] Using {used_derivatives:,} Photos derivatives "
+            f"(iCloud originals not on disk)"
+        )
+    if used_thumbs:
+        console.print(
+            f"[green]✓[/green] Using {used_thumbs:,} review thumbs "
+            f"(iCloud originals not on disk)"
+        )
+    if unresolved:
+        console.print(
+            f"[yellow]Skipped {unresolved:,} photos with no local original, "
+            f"derivative, or real thumb[/yellow]"
+        )
     
-    console.print(f"[green]✓[/green] Found {len(photo_data):,} accessible photos")
+    console.print(f"[green]✓[/green] Found {len(photo_data):,} scorable photos")
     
     if not photo_data:
         console.print("[yellow]No photos to scan.[/yellow]")
+        console.print(
+            "[dim]Tip: Photos needs local derivatives (or Review thumbs) for "
+            "cloud-only favorites[/dim]"
+        )
         return
     
-    # Extract features
+    # Extract features from readable score_path (thumb or original)
     console.print("\n[bold]Extracting visual features...[/bold]")
     features_dict = extractor.extract_batch(
-        [p['path'] for p in photo_data],
+        [p['score_path'] for p in photo_data],
         batch_size=batch_size
     )
     
-    # Create PhotoInfo objects
+    # Create PhotoInfo objects (path = library path for JSON / review)
     photo_infos = []
+    score_path_by_lib = {}
     for p in photo_data:
-        if p['path'] in features_dict:
-            info = PhotoInfo(
-                path=p['path'],
-                uuid=p['uuid'],
-                date=p['date'],
-                features=features_dict[p['path']]
-            )
-            photo_infos.append(info)
+        feats = features_dict.get(p['score_path'])
+        if feats is None:
+            continue
+        info = PhotoInfo(
+            path=p['path'],
+            uuid=p['uuid'],
+            date=p['date'],
+            features=feats,
+        )
+        photo_infos.append(info)
+        score_path_by_lib[id(info)] = p['score_path']
     
     console.print(f"[green]✓[/green] Extracted features for {len(photo_infos):,} photos")
     
@@ -141,7 +216,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     for photo, score in zip(photo_infos, scores):
         photo.score = float(score)
     
-    # Compute perceptual hashes for series detection
+    # Perceptual hashes: hash the readable file (thumb OK; None on failure is fine)
     console.print("\n[bold]Computing perceptual hashes...[/bold]")
     detector = SeriesDetector(
         time_threshold_seconds=60,
@@ -150,7 +225,8 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     )
     
     for photo in tqdm(photo_infos, desc="Computing hashes"):
-        photo.phash = detector.compute_phash(photo.path)
+        readable = score_path_by_lib.get(id(photo), photo.path)
+        photo.phash = detector.compute_phash(readable)
     
     # Detect series
     console.print("\n[bold]Detecting photo series...[/bold]")
@@ -179,7 +255,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     table.add_column("Percentage", justify="right")
     
     for category, count in score_distribution.items():
-        pct = count / len(photo_infos) * 100
+        pct = count / len(photo_infos) * 100 if photo_infos else 0
         table.add_row(category, str(count), f"{pct:.1f}%")
     
     console.print(table)
@@ -204,7 +280,7 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
         if len(deletable) > 20:
             console.print(f"  ... and {len(deletable) - 20} more")
     
-    # Save detailed results
+    # Save detailed results — path is library path when known (review thumb keys)
     results = {
         'scan_date': datetime.now().isoformat(),
         'after_date': after_date.isoformat(),
@@ -267,6 +343,8 @@ def main():
                        help='Batch size for feature extraction')
     parser.add_argument('--limit', type=int, default=None,
                        help='Limit number of photos to scan (for testing)')
+    parser.add_argument('--model', type=str, default=DEFAULT_BACKBONE,
+                       help=f'timm backbone (must match training; default: {DEFAULT_BACKBONE})')
     
     args = parser.parse_args()
     
@@ -277,7 +355,8 @@ def main():
             after_date=after,
             score_threshold=args.threshold,
             batch_size=args.batch_size,
-            limit=args.limit
+            limit=args.limit,
+            model_name=args.model,
         )
     except Exception as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")
