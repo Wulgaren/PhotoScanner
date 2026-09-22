@@ -39,4 +39,8 @@ Each job shows the equivalent `python` command, then runs it. Last dates and thr
 - Learns from what you rescue vs leave in “To Delete”
 - Optional Twitter/X curator via Discord
 
+Preference embeddings use **CLIP ViT-B/16** (`vit_base_patch16_clip_224.openai`) via `timm` — strong for personal taste, and practical on Apple Silicon (MPS) when training on thousands of photos. After upgrading, re-run Train once so features and `.cache/aesthetic_model.pkl` match the new backbone.
+
+**iCloud Optimize:** when originals are not on disk, Train and Scan fall back to real review thumbs in `.cache/review_thumbs/` (matched via Photos path strings and prior scan/session UUID→path). Placeholder `missing_*.jpg` files are never used. Full-res images are downscaled to the same max edge (900) before embedding so goods and bads share one domain. Rebuild the feature cache after the Train preprocess change (Train clears it automatically when the preprocess tag changes).
+
 Scripts, flags, and internals: [`src/README.md`](src/README.md).

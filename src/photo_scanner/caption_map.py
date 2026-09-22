@@ -2,8 +2,9 @@
 
 extract_username strips the extension and an optional leading NN- prefix,
 then isolates a handle via date, unix-timestamp, space, or media-token delimiters.
-Handles may start with a digit but must contain a letter. Returns None if
-isolation is unclear (IMG_1234, image0, no delimiter).
+An optional numeric post/status id between handle and date is skipped.
+Handles may start with a digit or underscore but must contain a letter. Returns
+None if isolation is unclear (IMG_1234, image0, no delimiter).
 """
 
 from collections import Counter, defaultdict
@@ -16,32 +17,57 @@ from photo_scanner.paths import USERNAME_CAPTIONS_PATH
 _GENERIC = frozenset({"img", "image", "dsc", "dscn", "photo", "pxl", "screenshot"})
 
 
+_HANDLE = r"[A-Za-z0-9_][A-Za-z0-9_.]*?"
+# optional post/status id between handle and date: -123, _-123, -123_1
+_ID_BEFORE_DATE = r"(?:[_-]-?\d+(?:_\d+)?)?"
+
+
+def _is_media_token(token: str) -> bool:
+    """Twitter-ish media id: long, has a letter, and mixed case or a digit."""
+    if len(token) < 10:
+        return False
+    if not re.search(r"[A-Za-z]", token):
+        return False
+    mixed = re.search(r"[A-Z]", token) and re.search(r"[a-z]", token)
+    return bool(mixed or re.search(r"\d", token))
+
+
 def extract_username(filename: str) -> str | None:
     stem = Path(filename).stem
     stem = re.sub(r"^\d+-", "", stem)
 
-    m = re.match(r"^(.+?)-((?:19|20)\d{6})(?:[_-]|$)", stem)
+    m = re.match(rf"^({_HANDLE}){_ID_BEFORE_DATE}-((?:19|20)\d{{6}})(?:[_-]|$)", stem)
     if m:
-        return _valid_username(m.group(1))
+        user = _valid_username(m.group(1))
+        if user:
+            return user
 
-    m = re.match(r"^(.+?)_((?:19|20)\d{6})_", stem)
+    m = re.match(rf"^({_HANDLE})_((?:19|20)\d{{6}})_", stem)
     if m:
-        return _valid_username(m.group(1))
+        user = _valid_username(m.group(1))
+        if user:
+            return user
 
     # "dear.zia ClipDown.App_…" / "dear.zia 455141170_…"
     m = re.match(r"^(\S+)\s+", stem)
     if m:
-        return _valid_username(m.group(1))
+        user = _valid_username(m.group(1))
+        if user:
+            return user
 
     # unix-ish timestamp: handle_1733585670_…
-    m = re.match(r"^(.+?)_(\d{10,})(?:_|$)", stem)
+    m = re.match(rf"^({_HANDLE})_(\d{{10,}})(?:_|$)", stem)
     if m:
-        return _valid_username(m.group(1))
+        user = _valid_username(m.group(1))
+        if user:
+            return user
 
-    # twitter media token, optional _N frame suffix
-    m = re.match(r"^(.+)_([A-Za-z0-9]{10,})(?:_\d+)?$", stem)
-    if m and re.search(r"[A-Z]", m.group(2)) and re.search(r"[a-z]", m.group(2)):
-        return _valid_username(m.group(1))
+    # twitter media token (alnum / _ / -), optional _N frame suffix; `_+` separator
+    m = re.match(r"^(.+)_+([A-Za-z0-9_-]{10,}?)(?:_\d+)?$", stem)
+    if m and _is_media_token(m.group(2)):
+        user = _valid_username(m.group(1).rstrip("_"))
+        if user:
+            return user
 
     return None
 
@@ -49,7 +75,7 @@ def extract_username(filename: str) -> str | None:
 def _valid_username(token: str) -> str | None:
     if not token or token.lower() in _GENERIC:
         return None
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.]*", token):
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.]*", token):
         return None
     if not re.search(r"[A-Za-z]", token):
         return None
@@ -194,8 +220,25 @@ if __name__ == "__main__":
     assert extract_username("10ve.xx_1733585670_3517894033408699610_8443250103.jpg") == "10ve.xx"
     assert extract_username("01-8t8ear-20260817_142403-902476507.jpg") == "8t8ear"
     assert extract_username("8t8ear_DceSMYeEpyx_2.jpg") == "8t8ear"
+    assert extract_username("_IUofficial_HRnzB-rasAAEieq.jpg") == "_IUofficial"
+    assert extract_username("_IUofficial_HRnzB_Ia4AAviMn.jpg") == "_IUofficial"
+    assert extract_username("_IUofficial 2025-01-25T104229 1.jpeg") == "_IUofficial"
+    assert extract_username("aespapic_HRq8p_oWgAAgwIf.jpg") == "aespapic"
+    assert extract_username("01-__chappy___-20260907_151455-336796402.jpg") == "__chappy___"
+    assert extract_username("__chappy___ 2025-01-06T132841-1.jpeg") == "__chappy___"
     assert extract_username("IMG_1234.jpg") is None
     assert extract_username("image0.jpg") is None
+    assert extract_username("_uyis.c-3395296735-20260911_031425.jpg") == "_uyis.c"
+    assert extract_username("minjeong.log_-822244289-20260911_104556.jpg") == "minjeong.log"
+    assert extract_username("ourxche-3772705043-20260906_145639.jpg") == "ourxche"
+    assert extract_username("01-hiiragi428-3983804215000436647_1-20260911_133459.jpg") == "hiiragi428"
+    assert extract_username(
+        "02-cocona_sakuragi_official-3983715551017112789_2-20260911_111504.jpg"
+    ) == "cocona_sakuragi_official"
+    assert extract_username("04-_chaechae_1-3983337933897388746_4-20260910_220844.jpg") == "_chaechae_1"
+    assert extract_username("cosmopolitankorea-2691120700-20260911_090009.mp4") == "cosmopolitankorea"
+    assert extract_username("ningfusion_HR3LK_EWEAQ17_7.jpg") == "ningfusion"
+    assert extract_username("katarinea__bQDRbkXbnWc1vPkU.mp4") == "katarinea"
 
     assert is_learnable_caption("aespa karina")
     assert not is_learnable_caption("")

@@ -76,6 +76,18 @@ def add_captions(album_name: str = DEFAULT_ALBUM, dry_run: bool = False) -> None
                 if u == username:
                     console.print(f"  {photo.filename}")
 
+    no_teacher = sorted(
+        u for u in missing_users if u not in mapping and u not in conflicts
+    )
+    if no_teacher:
+        console.print()
+        console.print("[yellow]No teacher found[/yellow]")
+        for username in no_teacher:
+            console.print(f"  {username}")
+            for photo, u in labeled:
+                if u == username:
+                    console.print(f"  {photo.filename}")
+
     applied = 0
     unmapped: list[str] = []
     for photo, username in labeled:
