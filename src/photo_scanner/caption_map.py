@@ -1,10 +1,11 @@
 """Username extraction and persistable username→caption map.
 
 extract_username strips the extension and an optional leading NN- prefix,
-then isolates a handle via date, unix-timestamp, space, or media-token delimiters.
-An optional numeric post/status id between handle and date is skipped.
-Handles may start with a digit or underscore but must contain a letter. Returns
-None if isolation is unclear (IMG_1234, image0, no delimiter).
+then isolates a handle via date, unix-timestamp, Instagram CDN id runs,
+space, or media-token delimiters. An optional numeric post/status id between
+handle and date is skipped. Handles may start with a digit or underscore but
+must contain a letter. Returns None if isolation is unclear (IMG_1234,
+image0, no delimiter).
 """
 
 from collections import Counter, defaultdict
@@ -50,6 +51,13 @@ def extract_username(filename: str) -> str | None:
 
     # "dear.zia ClipDown.App_…" / "dear.zia 455141170_…"
     m = re.match(r"^(\S+)\s+", stem)
+    if m:
+        user = _valid_username(m.group(1))
+        if user:
+            return user
+
+    # Instagram CDN: handle_9dig_10+dig_…_n (short id is not part of the handle)
+    m = re.match(rf"^({_HANDLE})_(?:\d+_)+\d+(?:_n)?$", stem)
     if m:
         user = _valid_username(m.group(1))
         if user:
@@ -228,6 +236,39 @@ if __name__ == "__main__":
     assert extract_username("__chappy___ 2025-01-06T132841-1.jpeg") == "__chappy___"
     assert extract_username("IMG_1234.jpg") is None
     assert extract_username("image0.jpg") is None
+    assert extract_username("IMG_5799.JPG") is None
+    assert extract_username("3993234193829129757_3993233877840177538.jpg") is None
+    assert extract_username("3993164991125781577_3993163170776443661.jpg") is None
+    # Instagram CDN: user_<9dig>_<10+dig>_…_n — do not swallow the short id into the handle
+    assert (
+        extract_username("dlwlrma_823828755_18632972761000027_3086911603579841299_n.jpg")
+        == "dlwlrma"
+    )
+    assert (
+        extract_username("imnotningning_824507984_18018371528987300_2072655365761729354_n.jpg")
+        == "imnotningning"
+    )
+    assert (
+        extract_username("imwinter_819219091_18009210218989784_7478805383517584364_n.jpg")
+        == "imwinter"
+    )
+    assert (
+        extract_username("min.nicha_824633615_18101205713561534_5100490640282541945_n.jpg")
+        == "min.nicha"
+    )
+    assert (
+        extract_username("94_j.a_817903521_18635799508052177_8504602210209331592_n.jpg")
+        == "94_j.a"
+    )
+    assert (
+        extract_username("rosieline__820500958_18102387308346053_7642304317573462320_n.jpg")
+        == "rosieline_"
+    )
+    assert (
+        extract_username("reinyourheart_809209715_17982035301104465_1950607421404107618_n.jpg")
+        == "reinyourheart"
+    )
+    assert extract_username("aespa_official_7689386810341854485.mp4") == "aespa_official"
     assert extract_username("_uyis.c-3395296735-20260911_031425.jpg") == "_uyis.c"
     assert extract_username("minjeong.log_-822244289-20260911_104556.jpg") == "minjeong.log"
     assert extract_username("ourxche-3772705043-20260906_145639.jpg") == "ourxche"
