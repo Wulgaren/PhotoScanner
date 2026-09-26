@@ -50,8 +50,35 @@ enum AnnouncementsSummarizer {
             exit(1)
         }
 
-        let summary = try await summarizeLongText(raw, model: model)
+        let summary = spacedBulletList(try await summarizeLongText(raw, model: model))
         print(summary, terminator: "")
+    }
+
+    /// Model output often packs `- ` lines back-to-back; force a blank line between items.
+    private static func spacedBulletList(_ text: String) -> String {
+        let items = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map(normalizeBulletLine)
+        guard !items.isEmpty else { return "" }
+        return items.joined(separator: "\n\n") + "\n"
+    }
+
+    private static func normalizeBulletLine(_ line: String) -> String {
+        if line.hasPrefix("- ") { return line }
+        if line.hasPrefix("-") {
+            let rest = line.dropFirst().trimmingCharacters(in: .whitespaces)
+            return rest.isEmpty ? "-" : "- \(rest)"
+        }
+        if let dot = line.firstIndex(of: "."),
+           dot > line.startIndex,
+           line[..<dot].allSatisfy(\.isNumber)
+        {
+            let rest = line[line.index(after: dot)...].trimmingCharacters(in: .whitespaces)
+            return rest.isEmpty ? "- \(line)" : "- \(rest)"
+        }
+        return "- \(line)"
     }
 
     private static func summarizeLongText(_ text: String, model: SystemLanguageModel) async throws
@@ -106,16 +133,17 @@ enum AnnouncementsSummarizer {
     ) async throws -> String {
         let extra = instructionExtra.isEmpty ? "" : " \(instructionExtra)"
         let instructions = """
-        You write ultra-short announcement digests. Plain text only: no markdown, no headings, \
-        no bold, no links, no hashtags. One line per distinct announcement, format: \
-        "- Artist: brief what (date)". Max ~12 words after the artist. \
-        Keep only who / what product-or-event / when. Drop: URLs, hashtags, sources, sentiment, \
-        jacket specs, track lists, nested product breakdowns, poster counts, ticket sale fluff, \
-        campaign slogans, "additional content" dumps. No preamble or closing remarks.\(extra)
+        You write announcement digests as readable plaintext news. \
+        Output only a list: each distinct announcement is one sentence on its own line, \
+        starting with "- " (dash then space). Put a blank line between items. \
+        No markdown, headings, bold, italics, nested bullets, numbered lists, links, URLs, \
+        or hashtags. One sentence per item that says who / what / when in plain English. \
+        Drop: sources, track lists, jacket specs, ticket fluff, campaign slogans, sentiment, \
+        and anything that is not the news itself. No preamble or closing remarks.\(extra)
         """
         let session = LanguageModelSession(model: model, instructions: instructions)
         let prompt = """
-        One plain-text line per announcement (who / what / when only):
+        Summarize as plain sentences, one per announcement, each line "- …", blank line between:
 
         \(text)
         """
@@ -126,10 +154,10 @@ enum AnnouncementsSummarizer {
         -> String
     {
         let instructions = """
-        You merge partial announcement digests into one plain-text list. Deduplicate. \
-        No markdown, no headings, no bold, no links, no hashtags. \
-        One short line per item: "- Artist: brief what (date)". Max ~12 words after the artist. \
-        Drop everything except who / what / when. No preamble.
+        You merge partial announcement digests into one plaintext list. Deduplicate. \
+        Each item is one readable sentence on its own line, starting with "- " (dash then space). \
+        Put a blank line between items. No markdown, headings, bold, italics, nested bullets, \
+        numbered lists, links, URLs, or hashtags. Keep only who / what / when. No preamble.
         """
         let session = LanguageModelSession(model: model, instructions: instructions)
         let joined = parts.enumerated()
@@ -138,7 +166,7 @@ enum AnnouncementsSummarizer {
             }
             .joined(separator: "\n\n")
         let prompt = """
-        Merge into one plain-text who/what/when list:
+        Merge into one list of plain sentences, each "- …", blank line between:
 
         \(joined)
         """
