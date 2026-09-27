@@ -2,10 +2,10 @@
 
 extract_username strips the extension and an optional leading NN- prefix,
 then isolates a handle via date, unix-timestamp, Instagram CDN id runs,
-space, or media-token delimiters. An optional numeric post/status id between
-handle and date is skipped. Handles may start with a digit or underscore but
-must contain a letter. Returns None if isolation is unclear (IMG_1234,
-image0, no delimiter).
+space, media-token-before-date, ISO `__YYYY-MM-DDTHHMMSS…`, or media-token
+delimiters. An optional numeric post/status id between handle and date is
+skipped. Handles may start with a digit or underscore but must contain a
+letter. Returns None if isolation is unclear (IMG_1234, image0, no delimiter).
 """
 
 from collections import Counter, defaultdict
@@ -43,6 +43,16 @@ def extract_username(filename: str) -> str | None:
         if user:
             return user
 
+    # handle-mediaToken-YYYYMMDD(_HHMMSS…) — before underscore media-token split
+    m = re.match(
+        rf"^({_HANDLE})-([A-Za-z0-9]{{10,}})-((?:19|20)\d{{6}})(?:[_-]|$)",
+        stem,
+    )
+    if m and _is_media_token(m.group(2)):
+        user = _valid_username(m.group(1))
+        if user:
+            return user
+
     m = re.match(rf"^({_HANDLE})_((?:19|20)\d{{6}})_", stem)
     if m:
         user = _valid_username(m.group(1))
@@ -65,6 +75,16 @@ def extract_username(filename: str) -> str | None:
 
     # unix-ish timestamp: handle_1733585670_…
     m = re.match(rf"^({_HANDLE})_(\d{{10,}})(?:_|$)", stem)
+    if m:
+        user = _valid_username(m.group(1))
+        if user:
+            return user
+
+    # handle__2025-07-28T222453.000Z
+    m = re.match(
+        rf"^({_HANDLE})__+(?:19|20)\d{{2}}-\d{{2}}-\d{{2}}T\d{{6}}",
+        stem,
+    )
     if m:
         user = _valid_username(m.group(1))
         if user:
@@ -280,6 +300,8 @@ if __name__ == "__main__":
     assert extract_username("cosmopolitankorea-2691120700-20260911_090009.mp4") == "cosmopolitankorea"
     assert extract_username("ningfusion_HR3LK_EWEAQ17_7.jpg") == "ningfusion"
     assert extract_username("katarinea__bQDRbkXbnWc1vPkU.mp4") == "katarinea"
+    assert extract_username("limbo_limbs-Ba39DgVBk1u-20171030_144414.jpg") == "limbo_limbs"
+    assert extract_username("limbo_limbs__2025-07-28T222453.000Z.jpg") == "limbo_limbs"
 
     assert is_learnable_caption("aespa karina")
     assert not is_learnable_caption("")
