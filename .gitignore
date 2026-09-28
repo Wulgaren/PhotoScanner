@@ -25,10 +25,6 @@ __pycache__/
 dist/
 build/
 
-# Swift PM (announcements summarizer)
-tools/AnnouncementsSummarizer/.build/
-src/tools/AnnouncementsSummarizer/.build/
-
 # IDE
 .idea/
 .vscode/
