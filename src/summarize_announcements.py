@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Write announcements_summary.txt from announcements.txt using Apple Foundation Models
-(Swift CLI in tools/AnnouncementsSummarizer/). PCC routing is system-controlled, not app-controlled.
+Write announcements_summary.txt from announcements.txt via Cursor agent CLI
+(`agent -p --mode ask`).
 """
 
 from __future__ import annotations
@@ -9,28 +9,44 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
+import shutil
 import subprocess
 import sys
-from photo_scanner.paths import CONFIG_PATH, TOOLS_DIR
+from pathlib import Path
+
+from photo_scanner.paths import CONFIG_PATH
 
 SUMMARY_NAME = "announcements_summary.txt"
 
+DIGEST_RULES = """\
+You write a short announcement digest as flat plaintext bullets.
 
-def default_binary() -> Path:
-    env = os.environ.get("PHOTOSCANNER_ANNOUNCEMENTS_SUMMARIZER")
+Output only lines that start with "- " (dash then space). One sentence per item.
+Put a blank line between items. No markdown, headings, bold, italics, nested
+bullets, numbered lists, links, URLs, or hashtags. No preamble or closing.
+
+Keep only:
+1) Album / EP / single releases: artist + title + release date. Include physical
+   album release dates even when buried inside a tour post. Skip pre-order
+   windows and version lists.
+2) Drops in the next ~48 hours (trailer, medley, highlight, etc.): one short line.
+3) Live / fansign / offline / ticket news ONLY for Europe:
+   - If Poland (Warsaw, Kraków, etc.) is named, you MUST keep it: artist + city + date.
+   - Else if Europe tour with no Poland, one Europe line.
+   - Drop Japan, Korea, US, and every other non-Europe region entirely.
+
+Drop everything else: TV/livestream, season's greetings, merch calendars,
+concept-photo schedules, tracklists, fan sentiment, TikToks, slogans, sources.
+"""
+
+
+def default_agent() -> Path | None:
+    env = os.environ.get("PHOTOSCANNER_AGENT")
     if env:
-        return Path(env).expanduser().resolve()
-    arch = platform.machine()  # arm64 or x86_64 on Mac
-    triple = f"{arch}-apple-macosx"
-    return (
-        TOOLS_DIR
-        / "AnnouncementsSummarizer"
-        / ".build"
-        / triple
-        / "release"
-        / "announcements-summarizer"
-    )
+        p = Path(env).expanduser().resolve()
+        return p if p.is_file() else None
+    found = shutil.which("agent")
+    return Path(found).resolve() if found else None
 
 
 def load_announcements_path() -> Path | None:
@@ -43,10 +59,69 @@ def load_announcements_path() -> Path | None:
     return base / "announcements" / "announcements.txt"
 
 
+def build_prompt(raw: str) -> str:
+    return (
+        f"{DIGEST_RULES}\n"
+        "Summarize the announcements below. Output only the digest bullets.\n\n"
+        f"{raw.strip()}\n"
+    )
+
+
+def normalize_digest(text: str) -> str:
+    """Force flat spaced bullets even if the model nests or packs lines."""
+    items: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            items.append(line)
+        elif line.startswith("-"):
+            rest = line[1:].strip()
+            items.append(f"- {rest}" if rest else "-")
+        elif line[0].isdigit() and "." in line[:4]:
+            dot = line.index(".")
+            if line[:dot].isdigit():
+                rest = line[dot + 1 :].strip()
+                items.append(f"- {rest}" if rest else f"- {line}")
+            else:
+                items.append(f"- {line}")
+        else:
+            items.append(f"- {line}")
+    if not items:
+        return ""
+    return "\n\n".join(items) + "\n"
+
+
+def run_agent_digest(raw: str, *, agent: Path) -> str:
+    prompt = build_prompt(raw)
+    proc = subprocess.run(
+        [
+            str(agent),
+            "-p",
+            "--mode",
+            "ask",
+            "--trust",
+            "--output-format",
+            "text",
+            prompt,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        raise RuntimeError(err)
+    body = (proc.stdout or "").strip()
+    if not body:
+        raise RuntimeError("agent returned empty digest")
+    return normalize_digest(body)
+
+
 def write_announcements_summary(
     announcements_path: Path,
     *,
-    binary: Path | None = None,
+    agent: Path | None = None,
     dry_run: bool = False,
 ) -> bool | None:
     """
@@ -54,11 +129,9 @@ def write_announcements_summary(
 
     Returns:
         True if a summary was written (or printed in dry_run),
-        None if nothing to do (not macOS, no file, or empty),
-        False on failure (I/O, missing binary, summarizer process error).
+        None if nothing to do (no file, or empty),
+        False on failure (I/O, missing agent, agent process error).
     """
-    if platform.system() != "Darwin":
-        return None
     if not announcements_path.is_file():
         return None
     try:
@@ -68,24 +141,19 @@ def write_announcements_summary(
         return False
     if not raw.strip():
         return None
-    bin_path = binary or default_binary()
-    if not bin_path.is_file():
+    agent_path = agent or default_agent()
+    if agent_path is None or not agent_path.is_file():
         print(
-            "⚠️  announcements-summarizer not found; build: "
-            "cd src/tools/AnnouncementsSummarizer && swift build -c release",
+            "⚠️  Cursor agent CLI not found; install/login so `agent` is on PATH "
+            "(or set PHOTOSCANNER_AGENT)",
             file=sys.stderr,
         )
         return False
-    proc = subprocess.run(
-        [str(bin_path), str(announcements_path)],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
-        print(f"⚠️  Summarizer failed: {err}", file=sys.stderr)
+    try:
+        body = run_agent_digest(raw, agent=agent_path)
+    except RuntimeError as e:
+        print(f"⚠️  Summarizer failed: {e}", file=sys.stderr)
         return False
-    body = proc.stdout.rstrip() + "\n"
     if dry_run:
         sys.stdout.write(body)
         return True
@@ -97,7 +165,7 @@ def write_announcements_summary(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Write announcements_summary.txt from announcements.txt (Apple Foundation Models)."
+        description="Write announcements_summary.txt from announcements.txt (Cursor agent CLI)."
     )
     parser.add_argument(
         "--path",
@@ -105,9 +173,9 @@ def main() -> None:
         help="Path to announcements.txt (default: from config.json save_directory)",
     )
     parser.add_argument(
-        "--binary",
+        "--agent",
         type=Path,
-        help="Path to announcements-summarizer (or set PHOTOSCANNER_ANNOUNCEMENTS_SUMMARIZER)",
+        help="Path to agent binary (or set PHOTOSCANNER_AGENT; default: agent on PATH)",
     )
     parser.add_argument(
         "--dry-run",
@@ -130,8 +198,8 @@ def main() -> None:
         print(f"Not found: {ann}", file=sys.stderr)
         sys.exit(1)
 
-    binary = args.binary.expanduser().resolve() if args.binary else None
-    r = write_announcements_summary(ann, binary=binary, dry_run=args.dry_run)
+    agent = args.agent.expanduser().resolve() if args.agent else None
+    r = write_announcements_summary(ann, agent=agent, dry_run=args.dry_run)
     if r is False:
         sys.exit(1)
 

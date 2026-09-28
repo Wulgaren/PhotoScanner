@@ -136,17 +136,13 @@ Images go to `~/Pictures/TwitterImages/` (`all/`, `videos/`, `curated/`, `announ
 
 ## Summarize announcements
 
-macOS + Apple Intelligence helper. Build once:
-
-```bash
-cd src/tools/AnnouncementsSummarizer && swift build -c release
-```
+Uses the Cursor agent CLI (`agent` on PATH, or `PHOTOSCANNER_AGENT`). Requires `agent login`.
 
 ```bash
 python src/summarize_announcements.py
 python src/summarize_announcements.py --path /path/to/announcements.txt
 python src/summarize_announcements.py --dry-run
-python src/summarize_announcements.py --binary /path/to/announcements-summarizer
+python src/summarize_announcements.py --agent /path/to/agent
 ```
 
 Also runs when the Twitter bot exits.
@@ -185,7 +181,6 @@ python src/export_review_session.py --no-album
 | `src/*.py` | CLI scripts |
 | `src/photo_scanner/` | Shared model / series code |
 | `src/review_gui/static/` | Browser review assets |
-| `src/tools/AnnouncementsSummarizer/` | Swift summarizer |
 | `.cache/` | Model, features, launcher last-used params |
 | `output/` | Scan results, delete lists, review session |
 | `BadPhotos/` | Optional negative training images |

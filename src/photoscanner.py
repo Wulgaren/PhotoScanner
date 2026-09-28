@@ -35,7 +35,7 @@ COMMON_HELP = {
     "captions": "Fill empty captions in a smart album from learned usernames.",
     "wallpaper": "Find the current desktop wallpaper, or a screenshot, in Photos.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
-    "summarize": "Write announcements_summary.txt via Apple Foundation Models.",
+    "summarize": "Write announcements_summary.txt via Cursor agent CLI.",
 }
 
 MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "wallpaper", "twitter", "summarize")
@@ -364,12 +364,12 @@ def collect_summarize(state: dict) -> list[str]:
         extra.append("--dry-run")
     if more_options():
         path = ask_optional_path("announcements.txt path", last(state, "summarize", "path", None))
-        binary = ask_optional_path("summarizer binary", last(state, "summarize", "binary", None))
-        args.update(path=path, binary=binary)
+        agent = ask_optional_path("agent binary", last(state, "summarize", "agent", None))
+        args.update(path=path, agent=agent)
         if path:
             extra += ["--path", path]
-        if binary:
-            extra += ["--binary", binary]
+        if agent:
+            extra += ["--agent", agent]
     put(state, "summarize", **args)
     return extra
 
