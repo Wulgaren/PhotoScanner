@@ -11,11 +11,17 @@ from rich.console import Console
 from rich.progress import track
 
 from learn_from_feedback import record_added_photos
+from photo_scanner.feature_extractor import recommended_threshold_from_model
 from photo_scanner.paths import OUTPUT_DIR, ensure_data_dirs
 
 console = Console()
 
 ensure_data_dirs()
+
+
+def recommended_threshold() -> float | None:
+    """Train's calibrated flag threshold, if the saved model has one."""
+    return recommended_threshold_from_model()
 
 
 def add_photos_to_album(uuids: list, album_name: str, batch_size: int = 50) -> int:

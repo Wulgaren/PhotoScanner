@@ -72,6 +72,17 @@ def load_latest_results_path() -> Path | None:
     return files[0] if files else None
 
 
+def default_threshold() -> float:
+    """Start where Scan/Train calibrated, not at the old fixed 0.5.
+
+    With the MLP head most favorites score high, so the useful starting tier
+    is the calibrated flag threshold (fall back to 0.5 when unknown).
+    """
+    from photo_scanner.feature_extractor import recommended_threshold_from_model
+
+    return recommended_threshold_from_model() or 0.5
+
+
 def best_photo_index(photos: list[dict]) -> int:
     """Index of highest-scoring photo (already sorted desc by score in state)."""
     if not photos:
@@ -1016,7 +1027,9 @@ def main() -> None:
         default="flat",
         help="flat: threshold list paginated; grouped: similar-photo series (default flat)",
     )
-    parser.add_argument("--threshold", type=float, default=0.5, help="Starting score threshold (default 0.5)")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Starting score threshold (default: Train's "
+                             "auto-calibrated value, else 0.5)")
     parser.add_argument(
         "--page-size",
         type=int,
@@ -1047,7 +1060,8 @@ def main() -> None:
 
     console.print(f"Scan date: {results.get('scan_date', 'unknown')}")
     console.print(f"Photos: {results.get('total_photos', len(results.get('photos', [])))}")
-    console.print(f"Mode: [cyan]{args.mode}[/cyan]  threshold: {args.threshold}"
+    threshold = args.threshold if args.threshold is not None else default_threshold()
+    console.print(f"Mode: [cyan]{args.mode}[/cyan]  threshold: {threshold}"
                   + (f"  page-size: {args.page_size}" if args.mode == "flat" else ""))
 
     library_uuids = load_photos_library_uuids()
@@ -1059,7 +1073,7 @@ def main() -> None:
     STATE = ReviewState(
         results,
         results_path,
-        args.threshold,
+        threshold,
         mode=args.mode,
         page_size=args.page_size,
         library_uuids=library_uuids,

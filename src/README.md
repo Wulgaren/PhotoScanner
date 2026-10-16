@@ -92,7 +92,7 @@ python src/review_gui.py --results output/scan_results_YYYYMMDD_HHMMSS.json --po
 |------|---------|---------|
 | `--results` | latest `output/scan_results_*.json` | Scan JSON |
 | `--mode` | `flat` | `flat` (paginated list) or `grouped` (one series) |
-| `--threshold` | `0.5` | Starting score threshold |
+| `--threshold` | **auto** | Starting score threshold (default: Train's auto-calibrated value, else 0.5) |
 | `--page-size` | `3` | Photos per page in flat mode |
 | `--port` | `8765` | Local server port |
 | `--no-open` | off | Do not auto-open the browser |

@@ -66,6 +66,22 @@ def resolve_backbone_spec(model_name: str) -> tuple[str, Optional[Path]]:
     return model_name, None
 
 
+def recommended_threshold_from_model(model_path: Union[str, Path, None] = None) -> Optional[float]:
+    """Read Train's calibrated flag threshold from a model pkl (no backbone load)."""
+    import pickle
+
+    path = Path(model_path) if model_path else (CACHE_DIR / "aesthetic_model.pkl")
+    if not path.exists():
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        value = data.get("recommended_threshold")
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
 class FeatureExtractor:
     """Extract visual features from images using pretrained models."""
     

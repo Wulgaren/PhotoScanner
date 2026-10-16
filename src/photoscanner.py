@@ -254,9 +254,11 @@ def collect_review(state: dict) -> list[str]:
         choices=["flat", "grouped"],
         default=last(state, "review", "mode", "flat"),
     )
-    threshold = ask_float("Starting threshold (0–1)", last(state, "review", "threshold", 0.5))
+    threshold = ask_optional_float("Starting score threshold", last(state, "review", "threshold", None))
     args: dict[str, Any] = {"mode": mode, "threshold": threshold}
-    extra = ["--mode", mode, "--threshold", str(threshold)]
+    extra = ["--mode", mode]
+    if threshold is not None:
+        extra += ["--threshold", str(threshold)]
     if more_options():
         results = ask_optional_path("Scan results JSON", last(state, "review", "results", None))
         page_size = ask_int("Page size (flat)", last(state, "review", "page_size", 3))
