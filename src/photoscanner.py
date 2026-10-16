@@ -36,9 +36,10 @@ COMMON_HELP = {
     "wallpaper": "Find the current desktop wallpaper, or a screenshot, in Photos.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
     "summarize": "Write announcements_summary.txt via Cursor agent CLI.",
+    "finetune": "Advanced: fine-tune the CLIP backbone itself on your photos.",
 }
 
-MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "wallpaper", "twitter", "summarize")
+MENU_ORDER = ("train", "scan", "review", "learn", "move", "captions", "wallpaper", "twitter", "summarize", "finetune")
 MENU_LABELS = {
     "train": "Train",
     "scan": "Scan",
@@ -49,6 +50,7 @@ MENU_LABELS = {
     "wallpaper": "Find wallpaper",
     "twitter": "Twitter curator",
     "summarize": "Summarize announcements",
+    "finetune": "Fine-tune backbone (advanced)",
 }
 CYCLE = ("train", "scan", "review", "learn")
 SCRIPTS = {
@@ -61,6 +63,7 @@ SCRIPTS = {
     "wallpaper": "find_wallpaper.py",
     "twitter": "twitter_curator.py",
     "summarize": "summarize_announcements.py",
+    "finetune": "train_finetune.py",
 }
 
 
@@ -133,7 +136,20 @@ def ask_optional_path(label: str, default: str | None) -> str | None:
     return raw or None
 
 
+def ask_optional_float(label: str, default: float | None) -> float | None:
+    shown = "" if default is None else str(default)
+    raw = Prompt.ask(f"{label} [dim](empty = auto-calibrated)[dim]", default=shown).strip()
+    if raw == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        console.print("[red]Need a number or empty.[/red]")
+        return ask_optional_float(label, default)
+
+
 def more_options() -> bool:
+    return Confirm.ask("More options?", default=False)
     return Confirm.ask("More options?", default=False)
 
 
@@ -214,9 +230,11 @@ def collect_train(state: dict) -> list[str]:
 
 def collect_scan(state: dict) -> list[str]:
     after = ask_str("Scan photos after (YYYY-MM-DD)", last(state, "scan", "after", "2023-11-18"))
-    threshold = ask_float("Score threshold (0–1)", last(state, "scan", "threshold", 0.3))
+    threshold = ask_optional_float("Score threshold", last(state, "scan", "threshold", None))
     args: dict[str, Any] = {"after": after, "threshold": threshold}
-    extra = ["--after", after, "--threshold", str(threshold)]
+    extra = ["--after", after]
+    if threshold is not None:
+        extra += ["--threshold", str(threshold)]
     if more_options():
         batch = ask_int("Batch size", last(state, "scan", "batch_size", 32))
         limit = ask_optional_int("Limit (photo count)", last(state, "scan", "limit", None))
@@ -268,10 +286,12 @@ def collect_learn(state: dict) -> list[str]:
 
 
 def collect_move(state: dict) -> list[str]:
-    threshold = ask_float("Score threshold (0–1)", last(state, "move", "threshold", 0.8))
+    threshold = ask_optional_float("Score threshold", last(state, "move", "threshold", None))
     dry_run = Confirm.ask("Dry run (don’t touch Photos)?", default=bool(last(state, "move", "dry_run", False)))
     args: dict[str, Any] = {"threshold": threshold, "dry_run": dry_run}
-    extra = ["--threshold", str(threshold)]
+    extra: list[str] = []
+    if threshold is not None:
+        extra += ["--threshold", str(threshold)]
     if dry_run:
         extra.append("--dry-run")
     if more_options():
@@ -374,6 +394,20 @@ def collect_summarize(state: dict) -> list[str]:
     return extra
 
 
+def collect_finetune(state: dict) -> list[str]:
+    cutoff = ask_str("Cutoff date (YYYY-MM-DD)", last(state, "finetune", "cutoff_date", "2023-11-18"))
+    epochs = ask_int("Epochs", last(state, "finetune", "epochs", 3))
+    args: dict[str, Any] = {"cutoff_date": cutoff, "epochs": epochs}
+    extra = ["--cutoff-date", cutoff, "--epochs", str(epochs)]
+    if more_options():
+        sample = ask_optional_int("Sample size (quick test)", last(state, "finetune", "sample_size", None))
+        args["sample_size"] = sample
+        if sample is not None:
+            extra += ["--sample-size", str(sample)]
+    put(state, "finetune", **args)
+    return extra
+
+
 COLLECT: dict[str, Callable[[dict], list[str]]] = {
     "train": collect_train,
     "scan": collect_scan,
@@ -384,6 +418,7 @@ COLLECT: dict[str, Callable[[dict], list[str]]] = {
     "wallpaper": collect_wallpaper,
     "twitter": collect_twitter,
     "summarize": collect_summarize,
+    "finetune": collect_finetune,
 }
 
 

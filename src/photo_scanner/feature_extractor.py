@@ -1,8 +1,13 @@
-"""
-Feature extraction using pretrained CNN/ViT models.
-Extracts visual embeddings from photos for similarity comparison and classification.
-"""
+"""Preference model: CLIP backbone + calibrated head on top of frozen features."""
 
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Union
+
+import numpy as np
 import torch
 from PIL import Image
 
@@ -14,17 +19,51 @@ except ImportError:
     pass
 import timm
 from timm.data import resolve_model_data_config, create_transform
-from pathlib import Path
-from typing import List, Union, Optional
-import numpy as np
-from tqdm import tqdm
 
+from photo_scanner.paths import CACHE_DIR
 from photo_scanner.thumbs import EMBED_MAX_EDGE
 
 
 # CLIP ViT-B/16: strong semantic + aesthetic features for personal taste learning.
 # 224px input stays practical on Apple Silicon (MPS) when scoring thousands of photos.
 DEFAULT_BACKBONE = "vit_base_patch16_clip_224.openai"
+
+# Registry of fine-tuned backbones produced by train_finetune.py:
+# {"<tag>": {"path": "<.pth>", "base_backbone": "<timm name>", "created": iso}}
+FINETUNED_REGISTRY = CACHE_DIR / "finetuned_backbones.json"
+
+
+def load_finetuned_registry() -> dict:
+    if not FINETUNED_REGISTRY.exists():
+        return {}
+    try:
+        data = json.loads(FINETUNED_REGISTRY.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def register_finetuned_backbone(tag: str, path: Union[str, Path], base_backbone: str) -> None:
+    registry = load_finetuned_registry()
+    registry[tag] = {
+        "path": str(path),
+        "base_backbone": base_backbone,
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    FINETUNED_REGISTRY.write_text(json.dumps(registry, indent=2) + "\n")
+
+
+def resolve_backbone_spec(model_name: str) -> tuple[str, Optional[Path]]:
+    """Map a backbone tag to (timm_model_name, optional weights path).
+
+    Fine-tuned tags (registered by train_finetune.py) load custom weights on
+    top of their base timm model; everything else is used as-is.
+    """
+    entry = load_finetuned_registry().get(model_name)
+    if entry and Path(entry["path"]).exists():
+        return entry["base_backbone"], Path(entry["path"])
+    return model_name, None
 
 
 class FeatureExtractor:
@@ -40,7 +79,7 @@ class FeatureExtractor:
         Initialize feature extractor.
         
         Args:
-            model_name: Name of the pretrained model from timm
+            model_name: timm backbone, or a fine-tuned tag from the registry
             device: 'cuda', 'mps', or 'cpu' (auto-detected if None)
             max_edge: Downscale longest edge to this before model transform
                 (matches review thumbs; set None to skip)
@@ -64,8 +103,20 @@ class FeatureExtractor:
         if self.max_edge:
             print(f"Max edge before embed: {self.max_edge}")
         
+        # Resolve fine-tuned tags to (base timm model, weights)
+        base_name, weights_path = resolve_backbone_spec(model_name)
+
         # Load pretrained model (num_classes=0 → embedding / pooled features)
-        self.model = timm.create_model(model_name, pretrained=True, num_classes=0)
+        self.model = timm.create_model(base_name, pretrained=True, num_classes=0)
+        if weights_path is not None:
+            state = torch.load(weights_path, map_location="cpu")
+            state = state.get("state_dict", state)
+            # The fine-tune head is not part of the embedding model; drop it.
+            state = {k: v for k, v in state.items() if not k.startswith("head.")}
+            missing, unexpected = self.model.load_state_dict(state, strict=False)
+            if unexpected:
+                print(f"  (ignored {len(unexpected)} non-backbone tensors from {weights_path.name})")
+            print(f"Loaded fine-tuned weights: {weights_path}")
         self.model = self.model.to(self.device)
         self.model.eval()
         
@@ -105,7 +156,7 @@ class FeatureExtractor:
         return features.cpu().numpy().flatten()
     
     @torch.no_grad()
-    def extract_batch(self, image_paths: List[Union[str, Path]], 
+    def extract_batch(self, image_paths: list[Union[str, Path]], 
                       batch_size: int = 32,
                       show_progress: bool = True) -> dict:
         """
@@ -119,6 +170,7 @@ class FeatureExtractor:
         # Process in batches
         iterator = range(0, len(image_paths), batch_size)
         if show_progress:
+            from tqdm import tqdm
             iterator = tqdm(iterator, desc="Extracting features", 
                           total=len(image_paths) // batch_size + 1)
         
@@ -143,29 +195,55 @@ class FeatureExtractor:
         return results
 
 
+def make_preference_head():
+    """The classifier that sits on frozen CLIP features.
+
+    An MLP beat RandomForest by ~0.14 AUC on this data (favorites vs BadPhotos,
+    80/20 holdout: 0.886 vs 0.746). Kept as a factory so Train's cross-validation
+    fits exactly the model that gets saved.
+    """
+    from sklearn.neural_network import MLPClassifier
+
+    return MLPClassifier(
+        hidden_layer_sizes=(512, 128),
+        activation='relu',
+        alpha=1e-4,
+        batch_size=512,
+        learning_rate_init=1e-3,
+        max_iter=120,
+        early_stopping=True,
+        n_iter_no_change=12,
+        random_state=42,
+    )
+
+
 class AestheticScorer:
     """
     Score images based on learned aesthetic preferences.
     Uses the extracted features to predict how much the user would like a photo.
     """
-    
+
     def __init__(self, feature_extractor: FeatureExtractor):
         self.feature_extractor = feature_extractor
         self.backbone = feature_extractor.model_name
         self.model = None
         self.scaler = None
         self.is_one_class = True
+        self.recommended_threshold: Optional[float] = None
     
-    def train(self, good_features: np.ndarray, bad_features: np.ndarray = None):
+    def train(self, good_features: np.ndarray, bad_features: np.ndarray = None,
+              sample_weight: np.ndarray = None):
         """
         Train the aesthetic scorer.
         
         If bad_features is provided, trains a binary classifier (good vs bad).
         Otherwise, uses one-class learning to identify what "good" looks like.
+        
+        sample_weight: per-row weights for the binary case (e.g. up-weight
+        confirmed-deletion hard negatives).
         """
         from sklearn.preprocessing import StandardScaler
         from sklearn.svm import OneClassSVM
-        from sklearn.ensemble import RandomForestClassifier
         
         self.scaler = StandardScaler()
         good_scaled = self.scaler.fit_transform(good_features)
@@ -177,15 +255,22 @@ class AestheticScorer:
             self.model.fit(good_scaled)
             self.is_one_class = True
         else:
-            # Binary classification - learn to distinguish good from bad
-            print(f"Training binary classifier: {len(good_features)} good, {len(bad_features)} bad...")
+            # Binary classification - learn to distinguish good from bad.
+            # MLP beat RandomForest by ~0.14 AUC on this data (see train_metrics.json).
+            print(f"Training classifier: {len(good_features)} good, {len(bad_features)} bad...")
             bad_scaled = self.scaler.transform(bad_features)
             
             X = np.vstack([good_scaled, bad_scaled])
             y = np.array([1] * len(good_scaled) + [0] * len(bad_scaled))
             
-            self.model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-            self.model.fit(X, y)
+            self.model = make_preference_head()
+            if sample_weight is not None:
+                sample_weight = np.asarray(sample_weight, dtype=float)
+                if len(sample_weight) != len(X):
+                    raise ValueError(
+                        f"sample_weight has {len(sample_weight)} rows for {len(X)} samples"
+                    )
+            self.model.fit(X, y, sample_weight=sample_weight)
             self.is_one_class = False
         
         print("Training complete!")
@@ -223,6 +308,7 @@ class AestheticScorer:
                 'is_one_class': self.is_one_class,
                 'backbone': self.backbone,
                 'feature_dim': self.feature_extractor.feature_dim,
+                'recommended_threshold': self.recommended_threshold,
             }, f)
         print(f"Model saved to {path}")
     
@@ -248,4 +334,5 @@ class AestheticScorer:
         self.scaler = data['scaler']
         self.is_one_class = data.get('is_one_class', True)  # Default to one-class for old models
         self.backbone = saved_backbone or self.feature_extractor.model_name
+        self.recommended_threshold = data.get('recommended_threshold')
         print(f"Model loaded from {path}")

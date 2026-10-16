@@ -82,7 +82,35 @@ def load_latest_results():
         return json.load(f), result_files[0]
 
 
-def move_to_album(threshold: float = 0.8, album_name: str = "To Delete", 
+def recommended_threshold() -> float | None:
+    """Train's calibrated flag threshold, if the saved model has one."""
+    from photo_scanner.feature_extractor import AestheticScorer, FeatureExtractor
+    from photo_scanner.paths import MODEL_PATH
+
+    if not MODEL_PATH.exists():
+        return None
+    try:
+        scorer = AestheticScorer(FeatureExtractor())
+        scorer.load(MODEL_PATH)
+        return scorer.recommended_threshold
+    except Exception:
+        return None
+
+
+def resolve_threshold(results: dict, threshold: float | None) -> tuple[float, str]:
+    """Pick the album cutoff: explicit arg > scan's own > model calibration > 0.3."""
+    if threshold is not None:
+        return threshold, "explicit"
+    scan_threshold = results.get("score_threshold")
+    if isinstance(scan_threshold, (int, float)):
+        return float(scan_threshold), "the scan's own threshold"
+    auto = recommended_threshold()
+    if auto is not None:
+        return float(auto), "auto-calibrated from your rescue/delete feedback"
+    return 0.3, "default"
+
+
+def move_to_album(threshold: float = None, album_name: str = "To Delete", 
                   results_file: str = None, dry_run: bool = False):
     """Move all photos below threshold to an album."""
     
@@ -99,9 +127,10 @@ def move_to_album(threshold: float = 0.8, album_name: str = "To Delete",
             console.print("[red]No scan results found. Run ./photoscanner.sh (Scan) first.[/red]")
             return
     
+    threshold, source_label = resolve_threshold(results, threshold)
     console.print(f"Loaded: {source}")
     console.print(f"Total photos in scan: {results['total_photos']}")
-    console.print(f"Threshold: {threshold}")
+    console.print(f"Threshold: {threshold} ({source_label})")
     
     # Find photos below threshold
     photos_to_move = [
@@ -161,8 +190,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Move photos below score threshold to an album in Apple Photos'
     )
-    parser.add_argument('--threshold', type=float, default=0.8,
-                       help='Score threshold - photos below this are moved (default: 0.8)')
+    parser.add_argument('--threshold', type=float, default=None,
+                       help='Score threshold - photos below this are moved '
+                            '(default: the scan\'s own threshold, else Train\'s '
+                            'auto-calibrated value)')
     parser.add_argument('--album', type=str, default='To Delete',
                        help='Album name to move photos to (default: "To Delete")')
     parser.add_argument('--results', type=str, default=None,

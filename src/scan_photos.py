@@ -23,9 +23,14 @@ from photo_scanner.feature_extractor import (
 from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
 from photo_scanner.thumbs import (
     EMBED_MAX_EDGE,
+    EMBED_PREPROCESS,
     build_uuid_to_path_index,
     resolve_scorable_image,
 )
+from photo_scanner.feedback_features import record_flagged_batch
+from learn_from_feedback import normalize_uuid
+
+DEFAULT_SCAN_THRESHOLD = 0.3
 
 # Register HEIC support
 try:
@@ -51,7 +56,7 @@ def _is_video_path(path: str | None) -> bool:
     return Path(path).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def scan(after_date: datetime, score_threshold: float = 0.3,
+def scan(after_date: datetime, score_threshold: float = None,
          batch_size: int = 32, limit: int = None,
          model_name: str = DEFAULT_BACKBONE):
     """
@@ -59,7 +64,9 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     
     Args:
         after_date: Only scan photos after this date
-        score_threshold: Suggest deletion for photos below this score
+        score_threshold: Suggest deletion for photos below this score.
+            None = use the threshold Train calibrated from your rescue/delete
+            decisions (falls back to 0.3 when unavailable).
         batch_size: Batch size for feature extraction
         limit: Limit number of photos to scan (for testing)
         model_name: timm backbone (must match the trained preference model)
@@ -77,6 +84,20 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     extractor = FeatureExtractor(model_name=model_name, max_edge=EMBED_MAX_EDGE)
     scorer = AestheticScorer(extractor)
     scorer.load(model_path)
+    
+    # Resolve the flag threshold: explicit flag wins, else Train's calibration
+    threshold_source = "explicit"
+    if score_threshold is None:
+        if scorer.recommended_threshold is not None:
+            score_threshold = scorer.recommended_threshold
+            threshold_source = "auto-calibrated from your rescue/delete feedback (Train)"
+        else:
+            score_threshold = DEFAULT_SCAN_THRESHOLD
+            threshold_source = "default (no feedback calibration yet)"
+    console.print(
+        f"[dim]Flag scores below {score_threshold:.3f} "
+        f"({threshold_source}; override with --threshold)[/dim]\n"
+    )
     
     # Connect to Photos
     console.print("Connecting to Apple Photos...")
@@ -216,6 +237,22 @@ def scan(after_date: datetime, score_threshold: float = 0.3,
     for photo, score in zip(photo_infos, scores):
         photo.score = float(score)
     
+    # Persist features for flagged photos so Train can learn from your later
+    # decisions: a deleted photo's image is gone from Photos by Train time, but
+    # its features survived here. Rescues stay positives; deletions become hard
+    # negatives. See photo_scanner/feedback_features.py.
+    flagged_entries = [
+        (normalize_uuid(p.uuid), p.features, p.score)
+        for p in photo_infos
+        if p.score < score_threshold and p.uuid
+    ]
+    if flagged_entries:
+        stored = record_flagged_batch(flagged_entries, model_name, EMBED_PREPROCESS)
+        console.print(
+            f"[dim]✓ Saved features for {stored:,} flagged photos "
+            f"(.cache/flagged_features.pkl) for feedback learning[/dim]"
+        )
+    
     # Perceptual hashes: hash the readable file (thumb OK; None on failure is fine)
     console.print("\n[bold]Computing perceptual hashes...[/bold]")
     detector = SeriesDetector(
@@ -337,8 +374,10 @@ def main():
     parser = argparse.ArgumentParser(description='Scan photos for deletion suggestions')
     parser.add_argument('--after', type=str, default='2023-11-18',
                        help='Scan photos after this date (YYYY-MM-DD)')
-    parser.add_argument('--threshold', type=float, default=0.3,
-                       help='Score threshold for deletion suggestions (0-1)')
+    parser.add_argument('--threshold', type=float, default=None,
+                       help='Score threshold for deletion suggestions (0-1). '
+                            'Default: the threshold Train calibrated from your '
+                            'rescue/delete feedback (falls back to 0.3).')
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size for feature extraction')
     parser.add_argument('--limit', type=int, default=None,

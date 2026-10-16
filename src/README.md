@@ -10,12 +10,15 @@ source venv/bin/activate
 
 ## Train
 
-Favorited photos before the cutoff are positive examples. Optional `BadPhotos/` images (repo root) are negatives.
+Favorited photos before the cutoff are positive examples. Optional `BadPhotos/` images (repo root) are negatives. Feedback matters too: photos you **deleted** after Scan flagged them become hard negatives (weight ×3 by default — they describe the exact decision boundary the scanner ranks), and photos you **rescued** stay positives. Scan persists a 768-float feature vector per flagged photo (`.cache/flagged_features.pkl`) because a deleted photo's image is gone from Photos by Train time.
+
+Each run prints cross-validated ROC-AUC / avg-precision (5 folds) and writes `.cache/train_metrics.json`, so runs are comparable. At the end it derives the Scan flag threshold from your rescue/delete decisions (best F1: catch deletions, keep rescues).
 
 ```bash
 python src/train_model.py --cutoff-date 2023-11-18
 python src/train_model.py --cutoff-date 2023-11-18 --sample-size 200 --batch-size 32
 python src/train_model.py --cutoff-date 2023-11-18 --model vit_base_patch16_clip_224.openai
+python src/train_model.py --hard-neg-weight 5 --cv-folds 3
 ```
 
 | Flag | Default | Meaning |
@@ -23,32 +26,58 @@ python src/train_model.py --cutoff-date 2023-11-18 --model vit_base_patch16_clip
 | `--cutoff-date` | `2023-11-18` | Favorites before this date (YYYY-MM-DD) |
 | `--sample-size` | none | Cap training samples (testing) |
 | `--batch-size` | `32` | Feature-extraction batch size (try `64` on M3 Pro if memory allows) |
-| `--model` | `vit_base_patch16_clip_224.openai` | timm backbone for embeddings (CLIP ViT-B/16) |
+| `--model` | `vit_base_patch16_clip_224.openai` | timm backbone or a fine-tuned tag (see Fine-tune below) |
+| `--hard-neg-weight` | `3` | Sample weight for confirmed deletions (hard negatives) |
+| `--cv-folds` | `5` | Folds for cross-validated evaluation |
 
-Changing `--model` clears the feature cache and requires a full re-extract + retrain.
+The preference head is an MLP (512→128) — it beat the previous RandomForest by ~0.13 AUC on the same data. Changing `--model` clears the feature cache (the old one is copied to `feature_cache.pkl.bak_<timestamp>`) and requires a full re-extract + retrain. The previous model is likewise backed up before each save.
 
 **iCloud Optimize / no originals on disk:** Train still prefers local originals when present. If a good photo’s file is missing, it looks up the UUID in `output/scan_results_*.json` / `output/review_session.json`, then uses a real thumb from `.cache/review_thumbs/` (`sha1(path|uuid|900).jpg`). Placeholder `missing_*.jpg` thumbs are excluded. BadPhotos and other full-res negatives are downscaled to max edge 900 before CLIP so they match thumb sharpness. Feature cache key includes `preprocess=max_edge_900` — old caches are cleared automatically.
+
+## Bootstrap flagged features (one-off, recommended once)
+
+Deleted feedback photos normally can’t be recovered once Photos removes them — but their **review thumbs** usually still exist on disk. This extracts those features now, so the very next Train already has hard negatives instead of waiting a full Scan → Review → Learn cycle. Idempotent.
+
+```bash
+python src/bootstrap_flagged_features.py --dry-run
+python src/bootstrap_flagged_features.py
+```
 
 ## Scan
 
 Scores photos after a date. Needs a trained model (`.cache/aesthetic_model.pkl`).
 
 ```bash
-python src/scan_photos.py --after 2023-11-18 --threshold 0.8
-python src/scan_photos.py --after 2023-11-18 --threshold 0.3 --batch-size 32 --limit 50
+python src/scan_photos.py --after 2023-11-18
+python src/scan_photos.py --after 2023-11-18 --threshold 0.5 --batch-size 32 --limit 50
+python src/scan_photos.py --model finetuned_clip_v1
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--after` | `2023-11-18` | Scan photos after this date |
-| `--threshold` | `0.3` | Suggest deletion below this score |
+| `--threshold` | **auto** | Flag photos below this score. Default: the threshold Train calibrated from your rescue/delete feedback; falls back to 0.3 when none exists yet. |
 | `--batch-size` | `32` | Feature-extraction batch size |
-| `--limit` | none | Cap how many photos to scan |
+| `--limit` | none | Cap how many photos to scan (for testing) |
 | `--model` | `vit_base_patch16_clip_224.openai` | Must match the backbone used for Train |
+
+Scan saves the features of everything it flags to `.cache/flagged_features.pkl` — that's what turns your later rescues/deletes into training signal.
 
 **iCloud Optimize:** Scan includes favorites even when Photos marks them `ismissing`. Local originals/edited win when present; otherwise a real review thumb is scored (same helpers as Train). JSON `path` keeps the library path when known so Review can reopen the same thumb key. pHash runs on the readable file (thumb OK; failure → no phash, series still uses embeddings/time).
 
 Writes `output/scan_results_*.json` and a text suggestion list.
+
+## Fine-tune the backbone (advanced, optional)
+
+Frozen CLIP + the MLP head is the recommended default. For the extra jump, this adapts the CLIP backbone itself to your library (positives: favorites, rescues weighed higher; negatives: BadPhotos). Full fine-tune, AdamW, early stopping on a 10% validation split, MPS/CUDA autocast.
+
+```bash
+python src/train_finetune.py --cutoff-date 2023-11-18 --epochs 3
+python src/train_finetune.py --sample-size 200 --epochs 1        # quick test
+python src/train_model.py --model finetuned_clip_v1              # then retrain on top
+```
+
+Roughly 10–30 min/epoch on Apple Silicon for 20–40k images. The script registers a backbone **tag** (default `finetuned_clip_v1`) in `.cache/finetuned_backbones.json`; Train/Scan accept that tag via `--model`. Afterwards compare the new AUC in `.cache/train_metrics.json` — if it doesn't beat the frozen backbone, retrain with the default. (Confirmed deletions have no images left, so they're only usable by Train's head, not here.)
 
 ## Review (browser)
 
@@ -74,12 +103,13 @@ Progress: `output/review_session.json`. Finish writes `confirmed_delete_*.txt` a
 
 ## Move to album
 
-Alternative to browser review: dump low scores into Photos.
+Alternative to browser review: dump low scores into Photos. The default cutoff is the scan's own threshold (the value Scan used), or Train's auto-calibrated one for older scans.
 
 ```bash
-python src/move_to_album.py --threshold 0.8
-python src/move_to_album.py --threshold 0.8 --dry-run
-python src/move_to_album.py --threshold 0.8 --album "To Delete" --results path/to/scan_results.json
+python src/move_to_album.py
+python src/move_to_album.py --threshold 0.6
+python src/move_to_album.py --threshold 0.6 --dry-run
+python src/move_to_album.py --album "To Delete" --results path/to/scan_results.json
 ```
 
 ## Learn from feedback
@@ -178,10 +208,10 @@ python src/export_review_session.py --no-album
 |------|------|
 | `photoscanner.sh` | Launcher |
 | `src/photoscanner.py` | Menu / cycle |
-| `src/*.py` | CLI scripts |
+| `src/*.py` | CLI scripts (`train_model.py`, `train_finetune.py`, `bootstrap_flagged_features.py`, …) |
 | `src/photo_scanner/` | Shared model / series code |
 | `src/review_gui/static/` | Browser review assets |
-| `.cache/` | Model, features, launcher last-used params |
+| `.cache/` | Model, features, flagged features, launcher last-used params, `train_metrics.json` |
 | `output/` | Scan results, delete lists, review session |
 | `BadPhotos/` | Optional negative training images |
 | `config.json` | Discord / Twitter settings (gitignored) |
