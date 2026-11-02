@@ -26,9 +26,11 @@ from rich.console import Console
 from learn_from_feedback import normalize_uuid
 from photo_scanner.paths import REPO_ROOT
 from review_gui import (
+    best_photo_index,
     default_photos_library,
     load_latest_results_path,
     load_photos_library_uuids,
+    photo_key,
     resolve_readable_image,
 )
 
@@ -198,12 +200,32 @@ def ensure_site_thumb(photo: dict, dest: Path) -> bool:
         return False
 
 
+def is_best_in_series(photo: dict, series: dict[int, list[dict]]) -> bool:
+    group = series.get(int(photo["series_id"]), [])
+    if len(group) <= 1:
+        return False
+    return photo_key(photo) == photo_key(group[best_photo_index(group)])
+
+
+def photos_by_series(photos: list[dict]) -> dict[int, list[dict]]:
+    groups: dict[int, list[dict]] = {}
+    for photo in photos:
+        groups.setdefault(int(photo["series_id"]), []).append(photo)
+    for group in groups.values():
+        group.sort(
+            key=lambda p: (p.get("score") is not None, p.get("score") or 0),
+            reverse=True,
+        )
+    return groups
+
+
 def should_premark(score: Any, threshold: float) -> bool:
     return score is not None and float(score) < threshold
 
 
 def build_item(
     photo: dict,
+    series: dict[int, list[dict]],
     threshold: float,
     thumbs_dir: Path,
 ) -> dict | None:
@@ -218,6 +240,7 @@ def build_item(
         "score": round(float(score), 6) if score is not None else None,
         "date": photo.get("date"),
         "thumb": f"thumbs/{thumb_name}",
+        "is_best": is_best_in_series(photo, series),
         "default_delete": should_premark(score, threshold),
     }
 
@@ -418,6 +441,7 @@ def export_window(
 
     begin, end = window_bounds(start, months, index)
     photos = select_window(all_photos, begin, end)
+    series = photos_by_series(all_photos)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     thumbs_dir = out_dir / "thumbs"
@@ -426,7 +450,7 @@ def export_window(
     items: list[dict] = []
     skipped = 0
     for number, photo in enumerate(photos, start=1):
-        item = build_item(photo, threshold, thumbs_dir)
+        item = build_item(photo, series, threshold, thumbs_dir)
         if item is None:
             skipped += 1
         else:
