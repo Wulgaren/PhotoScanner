@@ -36,6 +36,7 @@ Each job shows the equivalent `python` command, then runs it. Last dates and thr
 - Trains on favorited photos (and `BadPhotos/` / feedback)
 - Scores later photos and groups bursts/series
 - Browser review for keep/delete (never auto-deletes the best shot in a series)
+- Optional phone photo review site in the private `interactivephotoreview` repo
 - Learns from what you rescue vs leave in “To Delete”
 - Optional Twitter/X curator via Discord
 

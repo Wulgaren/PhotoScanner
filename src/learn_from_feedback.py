@@ -5,6 +5,7 @@ Photos that were removed from the album are considered "good" and added to train
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -28,6 +29,81 @@ def normalize_uuid(uuid) -> str:
     if not uuid:
         return ""
     return str(uuid).strip().split("/", 1)[0].upper()
+
+
+_IGNORED_ID_TOKENS = {
+    "id",
+    "ids",
+    "uuid",
+    "uuids",
+    "uid",
+    "uids",
+    "photo",
+    "photos",
+    "true",
+    "false",
+    "null",
+}
+
+
+def parse_uuid_text(text: str) -> list[str]:
+    """
+    Parse UUIDs pasted from the phone review save sheet.
+
+    Accepts one per line, comma/space separated, a JSON array, or a JSON object
+    with an ids/uuids key. Comments starting with # are ignored. Order is kept.
+    """
+    if not text:
+        return []
+
+    values: list[str] = []
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    def collect(value) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            for entry in value:
+                collect(entry)
+        elif isinstance(value, dict):
+            preferred = [
+                value[key]
+                for key in ("ids", "uuids", "uids", "uuid", "id")
+                if key in value
+            ]
+            for entry in preferred or list(value.values()):
+                collect(entry)
+
+    if parsed is not None:
+        collect(parsed)
+    else:
+        cleaned = "\n".join(
+            line.split("#", 1)[0] for line in text.splitlines()
+        )
+        # Deliberately split on quotes/brackets too, but not "/" so
+        # AppleScript ids such as UUID/L0/001 stay one token.
+        values = [
+            token
+            for token in re.split(r"[,\s;\[\]{}()\"':]+", cleaned)
+            if token
+        ]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = normalize_uuid(value)
+        if not key or key.lower() in _IGNORED_ID_TOKENS:
+            continue
+        if key.isdigit():
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def normalize_uuid_set(uuids) -> set:

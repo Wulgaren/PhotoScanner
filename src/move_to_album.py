@@ -3,14 +3,14 @@
 Move photos below a score threshold to a 'To Delete' album in Apple Photos.
 """
 
+import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
-import argparse
 from rich.console import Console
-from rich.progress import track
 
-from learn_from_feedback import record_added_photos
+from learn_from_feedback import parse_uuid_text, record_added_photos
 from photo_scanner.feature_extractor import recommended_threshold_from_model
 from photo_scanner.paths import OUTPUT_DIR, ensure_data_dirs
 
@@ -88,21 +88,6 @@ def load_latest_results():
         return json.load(f), result_files[0]
 
 
-def recommended_threshold() -> float | None:
-    """Train's calibrated flag threshold, if the saved model has one."""
-    from photo_scanner.feature_extractor import AestheticScorer, FeatureExtractor
-    from photo_scanner.paths import MODEL_PATH
-
-    if not MODEL_PATH.exists():
-        return None
-    try:
-        scorer = AestheticScorer(FeatureExtractor())
-        scorer.load(MODEL_PATH)
-        return scorer.recommended_threshold
-    except Exception:
-        return None
-
-
 def resolve_threshold(results: dict, threshold: float | None) -> tuple[float, str]:
     """Pick the album cutoff: explicit arg > scan's own > model calibration > 0.3."""
     if threshold is not None:
@@ -114,6 +99,46 @@ def resolve_threshold(results: dict, threshold: float | None) -> tuple[float, st
     if auto is not None:
         return float(auto), "auto-calibrated from your rescue/delete feedback"
     return 0.3, "default"
+
+
+def move_uuids_to_album(
+    uuids: list[str],
+    album_name: str = "To Delete",
+    source: str = "phone review",
+    dry_run: bool = False,
+) -> int:
+    """Add a pasted UUID list to an album and record it as feedback."""
+    console.print("\n[bold blue]📸 PhotoScanner - Add IDs to Album[/bold blue]\n")
+    console.print(f"IDs: [cyan]{len(uuids)}[/cyan]")
+    console.print(f"Album: [cyan]{album_name}[/cyan]")
+    console.print(f"Source: {source}")
+
+    if not uuids:
+        console.print("[yellow]No IDs found.[/yellow]")
+        return 0
+
+    if dry_run:
+        console.print("\n[yellow]Dry run — nothing added.[/yellow]")
+        for uuid in uuids[:20]:
+            console.print(f"  {uuid}")
+        if len(uuids) > 20:
+            console.print(f"  ... and {len(uuids) - 20} more")
+        return 0
+
+    console.print(f"\n[yellow]Adding to '{album_name}'...[/yellow]")
+    added = add_photos_to_album(uuids, album_name)
+
+    console.print(f"\n[green]✓[/green] Added {added}/{len(uuids)} to '{album_name}'")
+    if added < len(uuids):
+        console.print(
+            f"[yellow]{len(uuids) - added} were already gone or not addable.[/yellow]"
+        )
+    if added:
+        record_added_photos(uuids, source)
+        console.print(
+            f"[dim]Open Photos → '{album_name}' → Select All → Delete[/dim]"
+        )
+    return added
 
 
 def move_to_album(threshold: float = None, album_name: str = "To Delete", 
@@ -206,16 +231,38 @@ def main():
                        help='Path to scan results JSON file (default: latest)')
     parser.add_argument('--dry-run', action='store_true',
                        help='Show what would be moved without actually moving')
-    
+    parser.add_argument('--uuids', type=str, default=None,
+                       help='Add specific photo UUIDs (comma/space/newline separated)')
+    parser.add_argument('--uuids-file', type=str, default=None,
+                       help='Read photo UUIDs from a file ("-" for stdin)')
+
     args = parser.parse_args()
-    
+
     try:
-        move_to_album(
-            threshold=args.threshold,
-            album_name=args.album,
-            results_file=args.results,
-            dry_run=args.dry_run
-        )
+        if args.uuids or args.uuids_file:
+            if args.uuids_file == "-":
+                text = sys.stdin.read()
+                source = "stdin"
+            elif args.uuids_file:
+                path = Path(args.uuids_file).expanduser()
+                text = path.read_text()
+                source = path.name
+            else:
+                text = args.uuids or ""
+                source = "command line"
+            move_uuids_to_album(
+                parse_uuid_text(text),
+                album_name=args.album,
+                source=f"phone review: {source}",
+                dry_run=args.dry_run,
+            )
+        else:
+            move_to_album(
+                threshold=args.threshold,
+                album_name=args.album,
+                results_file=args.results,
+                dry_run=args.dry_run
+            )
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
     except Exception as e:

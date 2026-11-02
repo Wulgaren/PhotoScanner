@@ -101,6 +101,38 @@ Keys: `←` `→` focus · `Space` toggle delete/keep · `1`–`9` jump+toggle �
 
 Progress: `output/review_session.json`. Finish writes `confirmed_delete_*.txt` and can add UUIDs to the Photos “To Delete” album.
 
+## Phone review site (static)
+
+A three-column chronological review grid. The private `interactivephotoreview`
+repo holds the app, `data.json`, and 720px thumbnails; Netlify deploys it on
+push. Nothing personal enters the public PhotoScanner repo.
+
+Start with the first window, then advance one window at a time:
+
+```bash
+python src/export_review_site.py --window-index 1 --push --squash-history
+python src/export_review_site.py --next-window --push --squash-history
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--results` | latest scan | Scan JSON |
+| `--out` | `../interactivephotoreview` | Site repo |
+| `--threshold` | `0.5` | Photos below this are pre-marked for deletion |
+| `--window-months` | `1` | Months per fresh window |
+| `--window-index` | first run only | Use a specific 1-based window |
+| `--next-window` | off | Advance from the window in `data.json` |
+| `--push` | off | Commit and push the site repo |
+| `--squash-history` | off | Replace the site repo history with one commit |
+
+Window 1 starts at the scan's `after_date` and includes every photo in range,
+oldest first. Tap toggles delete, hold opens fullscreen, and **Save IDs** copies
+UUIDs / downloads a `.txt` for the photos up to the furthest card you have
+tapped. Selections live in `localStorage`, so revisiting a window keeps them.
+
+`--squash-history` keeps the private repo at roughly one window's size instead
+of accumulating every batch in Git history.
+
 ## Move to album
 
 Alternative to browser review: dump low scores into Photos. The default cutoff is the scan's own threshold (the value Scan used), or Train's auto-calibrated one for older scans.
@@ -111,6 +143,15 @@ python src/move_to_album.py --threshold 0.6
 python src/move_to_album.py --threshold 0.6 --dry-run
 python src/move_to_album.py --album "To Delete" --results path/to/scan_results.json
 ```
+
+Add the IDs saved from the phone site:
+
+```bash
+python src/move_to_album.py --uuids-file ~/Downloads/to-delete-YYYYMMDD-HHMMSS.txt
+python src/move_to_album.py --uuids "UUID1, UUID2" --dry-run
+```
+
+The UUID path skips scan loading, adds to “To Delete”, and records feedback.
 
 ## Learn from feedback
 
