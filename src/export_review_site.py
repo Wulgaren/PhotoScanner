@@ -39,6 +39,11 @@ SITE_THUMB_QUALITY = 72
 DEFAULT_THRESHOLD = 0.5
 DEFAULT_WINDOW_MONTHS = 1
 SITE_DIR_NAME = "interactivephotoreview"
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+
+
+def is_video_path(path: str | None) -> bool:
+    return Path(path or "").suffix.lower() in VIDEO_EXTENSIONS
 
 
 def photo_id(photo: dict) -> str:
@@ -369,6 +374,8 @@ def export_window(
         photo
         for photo in results.get("photos") or []
         if normalize_uuid(photo.get("uuid"))
+        and not is_video_path(photo.get("path"))
+        and not is_video_path(photo.get("path_edited"))
     ]
 
     library_uuids = load_photos_library_uuids()

@@ -10,6 +10,7 @@ import pytest
 from export_review_site import (
     add_months,
     format_window_label,
+    is_video_path,
     resolve_window,
     select_window,
     should_premark,
@@ -102,6 +103,13 @@ def test_resolve_window_starts_at_one_then_advances(tmp_path):
     assert resolve_window(
         data_path, requested_index=4, next_window=False, months=2
     ) == (4, 2)
+
+
+def test_video_paths_are_rejected():
+    assert is_video_path("/library/A.MOV")
+    assert is_video_path("/library/B.mp4")
+    assert not is_video_path("/library/B.HEIC")
+    assert not is_video_path(None)
 
 
 def test_parse_uuid_text_accepts_lines_commas_json_comments_and_dedupes():

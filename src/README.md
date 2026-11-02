@@ -126,7 +126,8 @@ python src/export_review_site.py --next-window --push --squash-history
 | `--squash-history` | off | Replace the site repo history with one commit |
 
 Window 1 starts at the scan's `after_date` and includes every photo in range,
-oldest first. Tap toggles delete, hold opens fullscreen, and **Save IDs** copies
+oldest first. Videos are excluded (Scan already skips them; the exporter
+double-checks). Tap toggles delete, hold opens fullscreen, and **Save IDs** copies
 UUIDs / downloads a `.txt` for the photos up to the furthest card you have
 tapped. Selections live in `localStorage`, so revisiting a window keeps them.
 
