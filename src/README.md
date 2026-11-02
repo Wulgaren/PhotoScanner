@@ -133,8 +133,9 @@ tapped. Selections live in `localStorage`, so revisiting a window keeps them.
 
 Cross-device sync uses Netlify Blobs. Tap **Local only** in the header, then
 **Create sync link**; open that link on the other device once. State is stored
-per window and writes are last-write-wins. **Export progress** / **Import
-progress** in the same sheet provide a manual JSON backup.
+per window and writes are last-write-wins. Reloading resumes at the last toggled
+photo. **Export progress** / **Import progress** in the same sheet provide a
+manual JSON backup.
 
 `--squash-history` keeps the private repo at roughly one window's size instead
 of accumulating every batch in Git history.
