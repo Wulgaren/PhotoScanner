@@ -14,6 +14,7 @@ import argparse
 import calendar
 import hashlib
 import json
+import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from learn_from_feedback import normalize_uuid
 from photo_scanner.paths import REPO_ROOT
 from review_gui import (
     best_photo_index,
+    default_photos_library,
     load_latest_results_path,
     load_photos_library_uuids,
     photo_key,
@@ -44,6 +46,33 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
 def is_video_path(path: str | None) -> bool:
     return Path(path or "").suffix.lower() in VIDEO_EXTENSIONS
+
+
+def load_video_uuids(library: Path | None = None) -> set[str] | None:
+    """
+    UUIDs that Photos marks as video assets (ZKIND=1).
+
+    Scan can store a JPEG poster frame for a video, so the file extension is not
+    enough. Returns None when the library DB cannot be read.
+    """
+    lib = library or default_photos_library()
+    if lib is None:
+        return None
+    db_path = lib / "database" / "Photos.sqlite"
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT ZUUID FROM ZASSET WHERE ZKIND = 1 AND ZUUID IS NOT NULL"
+            )
+            return {normalize_uuid(u) for (u,) in rows if u}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        console.print(f"[yellow]Photos DB unreadable ({exc}); video filter skipped[/yellow]")
+        return None
 
 
 def photo_id(photo: dict) -> str:
@@ -389,6 +418,18 @@ def export_window(
         dropped = before - len(all_photos)
         if dropped:
             console.print(f"[dim]Dropped {dropped:,} photos gone from Photos[/dim]")
+
+    video_uuids = load_video_uuids()
+    if video_uuids is not None:
+        before = len(all_photos)
+        all_photos = [
+            photo
+            for photo in all_photos
+            if normalize_uuid(photo.get("uuid")) not in video_uuids
+        ]
+        dropped = before - len(all_photos)
+        if dropped:
+            console.print(f"[dim]Dropped {dropped:,} videos[/dim]")
 
     start = window_start(results, all_photos)
     last = last_photo_date(all_photos)

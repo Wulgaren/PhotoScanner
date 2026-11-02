@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -11,6 +12,7 @@ from export_review_site import (
     add_months,
     format_window_label,
     is_video_path,
+    load_video_uuids,
     resolve_window,
     select_window,
     should_premark,
@@ -110,6 +112,21 @@ def test_video_paths_are_rejected():
     assert is_video_path("/library/B.mp4")
     assert not is_video_path("/library/B.HEIC")
     assert not is_video_path(None)
+
+
+def test_load_video_uuids_reads_photos_media_kind(tmp_path):
+    lib = tmp_path / "Photos Library.photoslibrary"
+    db_dir = lib / "database"
+    db_dir.mkdir(parents=True)
+    conn = sqlite3.connect(db_dir / "Photos.sqlite")
+    conn.execute("CREATE TABLE ZASSET (ZUUID TEXT, ZKIND INTEGER)")
+    conn.executemany(
+        "INSERT INTO ZASSET VALUES (?, ?)",
+        [("video-1", 1), ("photo-1", 0), ("video-2", 1)],
+    )
+    conn.commit()
+    conn.close()
+    assert load_video_uuids(lib) == {"VIDEO-1", "VIDEO-2"}
 
 
 def test_parse_uuid_text_accepts_lines_commas_json_comments_and_dedupes():
