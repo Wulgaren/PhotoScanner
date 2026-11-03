@@ -159,7 +159,12 @@ python src/move_to_album.py --uuids-file ~/Downloads/to-delete-YYYYMMDD-HHMMSS.t
 python src/move_to_album.py --uuids "UUID1, UUID2" --dry-run
 ```
 
-The UUID path skips scan loading, adds to “To Delete”, and records feedback.
+The UUID path skips scan loading, adds to “To Delete”, and records the UUIDs in
+`feedback_history.json` so Learn can later treat rescues as positives and
+deletions as negatives.
+
+The launcher’s **Move to “To Delete” album** tool also offers this mode: answer
+yes to “Use a saved UUID list”, then give it the Save IDs `.txt` file.
 
 ## Learn from feedback
 

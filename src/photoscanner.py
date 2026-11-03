@@ -31,7 +31,7 @@ COMMON_HELP = {
     "scan": "Score newer photos and write deletion suggestions.",
     "review": "Open the browser UI to keep or cull suggestions.",
     "learn": "Turn album rescues and leftover deletes into training examples.",
-    "move": "Put low-scoring photos in the Photos “To Delete” album.",
+    "move": "Move low-scoring photos or a saved UUID list into the Photos “To Delete” album.",
     "captions": "Fill empty captions in a smart album from learned usernames.",
     "wallpaper": "Find the current desktop wallpaper, or a screenshot, in Photos.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
@@ -136,6 +136,18 @@ def ask_optional_path(label: str, default: str | None) -> str | None:
     return raw or None
 
 
+def ask_required_path(label: str, default: str | None) -> str:
+    while True:
+        raw = ask_optional_path(label, default)
+        if raw:
+            path = Path(raw).expanduser()
+            if path.is_file():
+                return raw
+            console.print(f"[red]No file at {path}[/red]")
+        else:
+            console.print("[red]A file path is required.[/red]")
+
+
 def ask_optional_float(label: str, default: float | None) -> float | None:
     shown = "" if default is None else str(default)
     raw = Prompt.ask(f"{label} [dim](empty = auto-calibrated)[dim]", default=shown).strip()
@@ -149,7 +161,6 @@ def ask_optional_float(label: str, default: float | None) -> float | None:
 
 
 def more_options() -> bool:
-    return Confirm.ask("More options?", default=False)
     return Confirm.ask("More options?", default=False)
 
 
@@ -288,22 +299,38 @@ def collect_learn(state: dict) -> list[str]:
 
 
 def collect_move(state: dict) -> list[str]:
-    threshold = ask_optional_float("Score threshold", last(state, "move", "threshold", None))
+    use_uuid_file = Confirm.ask(
+        "Use a saved UUID list from the phone review?",
+        default=bool(last(state, "move", "uuids_file", None)) or latest_scan() is None,
+    )
     dry_run = Confirm.ask("Dry run (don’t touch Photos)?", default=bool(last(state, "move", "dry_run", False)))
-    args: dict[str, Any] = {"threshold": threshold, "dry_run": dry_run}
     extra: list[str] = []
-    if threshold is not None:
-        extra += ["--threshold", str(threshold)]
+    args: dict[str, Any] = {"dry_run": dry_run, "uuids_file": None}
     if dry_run:
         extra.append("--dry-run")
+
+    if use_uuid_file:
+        uuids_file = ask_required_path(
+            "UUID list (Save IDs .txt)", last(state, "move", "uuids_file", None)
+        )
+        args["uuids_file"] = uuids_file
+        extra += ["--uuids-file", uuids_file]
+    else:
+        threshold = ask_optional_float("Score threshold", last(state, "move", "threshold", None))
+        args["threshold"] = threshold
+        if threshold is not None:
+            extra += ["--threshold", str(threshold)]
+
     if more_options():
         album = ask_str("Album name", last(state, "move", "album", "To Delete"))
-        results = ask_optional_path("Scan results JSON", last(state, "move", "results", None))
-        args.update(album=album, results=results)
+        args["album"] = album
         if album != "To Delete":
             extra += ["--album", album]
-        if results:
-            extra += ["--results", results]
+        if not use_uuid_file:
+            results = ask_optional_path("Scan results JSON", last(state, "move", "results", None))
+            args["results"] = results
+            if results:
+                extra += ["--results", results]
     put(state, "move", **args)
     return extra
 
@@ -473,7 +500,7 @@ def prepare(state: dict, tool: str) -> bool:
             console.print("[red]Still no model after train.[/red]")
             return False
 
-    if tool in ("review", "move") and latest_scan() is None:
+    if tool == "review" and latest_scan() is None:
         if not Confirm.ask("No scan results. Scan first?", default=True):
             console.print("[yellow]Need a scan first.[/yellow]")
             return False
@@ -483,9 +510,11 @@ def prepare(state: dict, tool: str) -> bool:
         if code != 0:
             console.print("[red]Scan did not finish cleanly.[/red]")
             return False
-        if latest_scan() is None:
-            console.print("[red]Still no scan results.[/red]")
-            return False
+    elif tool == "move" and latest_scan() is None:
+        console.print(
+            "[dim]No scan results. Threshold mode needs one; "
+            "a saved UUID list works without it.[/dim]"
+        )
 
     return True
 
