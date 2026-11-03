@@ -126,10 +126,11 @@ python src/export_review_site.py --next-window --push --squash-history
 | `--squash-history` | off | Replace the site repo history with one commit |
 
 Window 1 starts at the scan's `after_date` and includes every photo in range,
-oldest first. Videos are excluded (Scan already skips them; the exporter
-double-checks). Tap toggles delete, hold opens fullscreen, and **Save IDs** copies
-UUIDs / downloads a `.txt` for the photos up to the furthest card you have
-tapped. Selections live in `localStorage`, so revisiting a window keeps them.
+oldest first. Videos and photos in the Hidden album are excluded (Scan already
+skips videos; the exporter checks the Photos DB for both). Tap toggles delete,
+hold opens fullscreen, and **Save IDs** copies UUIDs / downloads a `.txt` for the
+photos up to the furthest card you have tapped. Selections live in
+`localStorage`, so revisiting a window keeps them.
 
 Cross-device sync uses Netlify Blobs. Tap **Local only** in the header, then
 **Create sync link**; open that link on the other device once. State is stored

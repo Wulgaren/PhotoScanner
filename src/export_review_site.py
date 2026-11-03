@@ -75,6 +75,28 @@ def load_video_uuids(library: Path | None = None) -> set[str] | None:
         return None
 
 
+def load_hidden_uuids(library: Path | None = None) -> set[str] | None:
+    """UUIDs in the Photos Hidden album. None when the library DB is unreadable."""
+    lib = library or default_photos_library()
+    if lib is None:
+        return None
+    db_path = lib / "database" / "Photos.sqlite"
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT ZUUID FROM ZASSET WHERE ZHIDDEN = 1 AND ZUUID IS NOT NULL"
+            )
+            return {normalize_uuid(u) for (u,) in rows if u}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        console.print(f"[yellow]Photos DB unreadable ({exc}); hidden filter skipped[/yellow]")
+        return None
+
+
 def photo_id(photo: dict) -> str:
     return normalize_uuid(photo.get("uuid"))
 
@@ -430,6 +452,18 @@ def export_window(
         dropped = before - len(all_photos)
         if dropped:
             console.print(f"[dim]Dropped {dropped:,} videos[/dim]")
+
+    hidden_uuids = load_hidden_uuids()
+    if hidden_uuids is not None:
+        before = len(all_photos)
+        all_photos = [
+            photo
+            for photo in all_photos
+            if normalize_uuid(photo.get("uuid")) not in hidden_uuids
+        ]
+        dropped = before - len(all_photos)
+        if dropped:
+            console.print(f"[dim]Dropped {dropped:,} hidden photos[/dim]")
 
     start = window_start(results, all_photos)
     last = last_photo_date(all_photos)

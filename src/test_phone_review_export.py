@@ -12,6 +12,7 @@ from export_review_site import (
     add_months,
     format_window_label,
     is_video_path,
+    load_hidden_uuids,
     load_video_uuids,
     resolve_window,
     select_window,
@@ -127,6 +128,21 @@ def test_load_video_uuids_reads_photos_media_kind(tmp_path):
     conn.commit()
     conn.close()
     assert load_video_uuids(lib) == {"VIDEO-1", "VIDEO-2"}
+
+
+def test_load_hidden_uuids_reads_photos_hidden_flag(tmp_path):
+    lib = tmp_path / "Photos Library.photoslibrary"
+    db_dir = lib / "database"
+    db_dir.mkdir(parents=True)
+    conn = sqlite3.connect(db_dir / "Photos.sqlite")
+    conn.execute("CREATE TABLE ZASSET (ZUUID TEXT, ZHIDDEN INTEGER)")
+    conn.executemany(
+        "INSERT INTO ZASSET VALUES (?, ?)",
+        [("hidden-1", 1), ("photo-1", 0), ("hidden-2", 1), ("photo-2", None)],
+    )
+    conn.commit()
+    conn.close()
+    assert load_hidden_uuids(lib) == {"HIDDEN-1", "HIDDEN-2"}
 
 
 def test_parse_uuid_text_accepts_lines_commas_json_comments_and_dedupes():
