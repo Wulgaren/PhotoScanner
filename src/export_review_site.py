@@ -97,6 +97,43 @@ def load_hidden_uuids(library: Path | None = None) -> set[str] | None:
         return None
 
 
+def load_captions(library: Path | None = None) -> dict[str, str]:
+    """UUID -> non-empty Photos description. Empty when the library DB is unreadable."""
+    lib = library or default_photos_library()
+    if lib is None:
+        return {}
+    db_path = lib / "database" / "Photos.sqlite"
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                """
+                SELECT a.ZUUID, d.ZLONGDESCRIPTION
+                FROM ZASSET a
+                JOIN ZADDITIONALASSETATTRIBUTES aaa
+                  ON aaa.Z_PK = a.ZADDITIONALATTRIBUTES
+                JOIN ZASSETDESCRIPTION d
+                  ON d.Z_PK = aaa.ZASSETDESCRIPTION
+                WHERE d.ZLONGDESCRIPTION IS NOT NULL
+                  AND trim(d.ZLONGDESCRIPTION) != ''
+                """
+            )
+            captions: dict[str, str] = {}
+            for uuid, description in rows:
+                key = normalize_uuid(uuid)
+                text = (description or "").strip()
+                if key and text:
+                    captions[key] = text
+            return captions
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        console.print(f"[yellow]Photos captions unreadable ({exc}); captions skipped[/yellow]")
+        return {}
+
+
 def photo_id(photo: dict) -> str:
     return normalize_uuid(photo.get("uuid"))
 
@@ -250,13 +287,14 @@ def build_item(
     series: dict[int, list[dict]],
     threshold: float,
     thumbs_dir: Path,
+    captions: dict[str, str],
 ) -> dict | None:
     item_id = photo_id(photo)
     thumb_name = site_thumb_name(item_id)
     if not ensure_site_thumb(photo, thumbs_dir / thumb_name):
         return None
     score = photo.get("score")
-    return {
+    item = {
         "id": item_id,
         "uuid": item_id,
         "score": round(float(score), 6) if score is not None else None,
@@ -265,6 +303,10 @@ def build_item(
         "is_best": is_best_in_series(photo, series),
         "default_delete": should_premark(score, threshold),
     }
+    caption = captions.get(item_id)
+    if caption:
+        item["caption"] = caption
+    return item
 
 
 def prune_thumbs(site_dir: Path, items: list[dict]) -> int:
@@ -481,10 +523,11 @@ def export_window(
     thumbs_dir = out_dir / "thumbs"
     thumbs_dir.mkdir(parents=True, exist_ok=True)
 
+    captions = load_captions()
     items: list[dict] = []
     skipped = 0
     for number, photo in enumerate(photos, start=1):
-        item = build_item(photo, series, threshold, thumbs_dir)
+        item = build_item(photo, series, threshold, thumbs_dir, captions)
         if item is None:
             skipped += 1
         else:

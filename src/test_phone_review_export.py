@@ -10,8 +10,10 @@ import pytest
 
 from export_review_site import (
     add_months,
+    build_item,
     format_window_label,
     is_video_path,
+    load_captions,
     load_hidden_uuids,
     load_video_uuids,
     resolve_window,
@@ -143,6 +145,53 @@ def test_load_hidden_uuids_reads_photos_hidden_flag(tmp_path):
     conn.commit()
     conn.close()
     assert load_hidden_uuids(lib) == {"HIDDEN-1", "HIDDEN-2"}
+
+
+def test_load_captions_reads_non_empty_photos_descriptions(tmp_path):
+    lib = tmp_path / "Photos Library.photoslibrary"
+    db_dir = lib / "database"
+    db_dir.mkdir(parents=True)
+    conn = sqlite3.connect(db_dir / "Photos.sqlite")
+    conn.execute("CREATE TABLE ZASSET (Z_PK INTEGER, ZUUID TEXT, ZADDITIONALATTRIBUTES INTEGER)")
+    conn.execute(
+        "CREATE TABLE ZADDITIONALASSETATTRIBUTES (Z_PK INTEGER, ZASSETDESCRIPTION INTEGER)"
+    )
+    conn.execute("CREATE TABLE ZASSETDESCRIPTION (Z_PK INTEGER, ZLONGDESCRIPTION TEXT)")
+    conn.executemany(
+        "INSERT INTO ZASSET VALUES (?, ?, ?)",
+        [(1, "aaaa-1", 10), (2, "bbbb-2", 20), (3, "cccc-3", 30)],
+    )
+    conn.executemany(
+        "INSERT INTO ZADDITIONALASSETATTRIBUTES VALUES (?, ?)",
+        [(10, 100), (20, 200), (30, 300)],
+    )
+    conn.executemany(
+        "INSERT INTO ZASSETDESCRIPTION VALUES (?, ?)",
+        [(100, "  aespa karina  "), (200, "   "), (300, None)],
+    )
+    conn.commit()
+    conn.close()
+
+    assert load_captions(lib) == {"AAAA-1": "aespa karina"}
+
+
+def test_build_item_includes_caption_only_when_present(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "export_review_site.ensure_site_thumb", lambda photo, dest: True
+    )
+    photo = {
+        "uuid": "aaaa-1/L0/001",
+        "date": "2023-11-18T08:23:18+01:00",
+        "score": 0.2,
+        "series_id": 0,
+    }
+    item = build_item(photo, {}, 0.5, tmp_path, {"AAAA-1": "aespa karina"})
+    assert item is not None
+    assert item["caption"] == "aespa karina"
+
+    bare = build_item(photo, {}, 0.5, tmp_path, {})
+    assert bare is not None
+    assert "caption" not in bare
 
 
 def test_parse_uuid_text_accepts_lines_commas_json_comments_and_dedupes():
