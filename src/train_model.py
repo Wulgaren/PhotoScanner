@@ -47,6 +47,12 @@ from photo_scanner.feedback_features import (
     calibrate_threshold,
     flagged_for_backbone,
 )
+from photo_scanner.holdout import bad_key, good_key, is_holdout
+from photo_scanner.negative_features import (
+    persisted_negatives,
+    record_negative_batch,
+    total_persisted_negatives,
+)
 from learn_from_feedback import normalize_uuid
 
 # Register HEIC support
@@ -256,6 +262,7 @@ def collect_training_data(cutoff_date: datetime, sample_size: int = None) -> dic
     # Check for BadPhotos folder
     bad_photo_paths = get_bad_photo_paths()
     has_bad_photos = len(bad_photo_paths) > 0
+    persisted_bad_count = total_persisted_negatives()
     
     # Check for feedback data
     rescued_uuids = get_rescued_photo_uuids()
@@ -266,13 +273,14 @@ def collect_training_data(cutoff_date: datetime, sample_size: int = None) -> dic
     has_session_kept = len(session_kept_uuids - rescued_uuids) > 0
     has_feedback_bad = len(feedback_bad_uuids) > 0
     
-    if has_bad_photos or has_feedback_bad:
-        total_bad = len(bad_photo_paths) + len(feedback_bad_uuids)
-        console.print(f"[yellow]📁 Found {total_bad:,} bad photo examples[/yellow]")
+    if has_bad_photos or has_feedback_bad or persisted_bad_count:
+        console.print(f"[yellow]📁 Bad photo examples[/yellow]")
         if has_bad_photos:
             console.print(f"   • {len(bad_photo_paths):,} from BadPhotos folder")
         if has_feedback_bad:
             console.print(f"   • {len(feedback_bad_uuids):,} from feedback")
+        if persisted_bad_count:
+            console.print(f"   • {persisted_bad_count:,} saved in the negative store")
         console.print("   Will train binary classifier (good vs bad)\n")
     else:
         console.print(f"[dim]No bad photos found - will use one-class learning[/dim]")
@@ -455,6 +463,8 @@ def train(
     model_name: str = DEFAULT_BACKBONE,
     hard_neg_weight: float = DEFAULT_HARD_NEG_WEIGHT,
     cv_folds: int = DEFAULT_CV_FOLDS,
+    holdout_eval: bool = False,
+    save_model: bool = True,
 ):
     """
     Train the model on curated photos.
@@ -466,6 +476,8 @@ def train(
         model_name: timm backbone for visual embeddings, or a fine-tuned tag
         hard_neg_weight: Sample weight for confirmed deletions (hard negatives)
         cv_folds: Folds for the honest evaluation pass
+        holdout_eval: Train on 90% and report AUC on the deterministic 10% holdout
+        save_model: Write the model and metrics (False for evaluation-only runs)
     """
     console.print("\n[bold blue]📸 PhotoScanner - Model Training[/bold blue]\n")
     console.print(f"[dim]Backbone: {model_name}[/dim]")
@@ -553,12 +565,17 @@ def train(
         cached_features = existing_cache.get('feature_cache', {})
         console.print(f"[dim]Loaded {len(cached_features):,} cached features[/dim]")
     
+    # Negatives already in the persistent store never need re-embedding, even
+    # if their files are gone. New files are hashed and recorded after extraction.
+    persisted_paths, _persisted_features = persisted_negatives(model_name, EMBED_PREPROCESS)
+    new_bad_paths = [p for p in all_bad_paths if p not in persisted_paths]
+
     # Determine which photos need feature extraction (good photos)
     good_paths_to_extract = [p[1] for p in good_paths if p[1] not in cached_features]
     good_already_cached = len(good_paths) - len(good_paths_to_extract)
     
     # Determine which bad photos need extraction
-    bad_paths_to_extract = [p for p in all_bad_paths if p not in cached_features] if has_any_bad else []
+    bad_paths_to_extract = [p for p in new_bad_paths if p not in cached_features]
     bad_already_cached = len(all_bad_paths) - len(bad_paths_to_extract) if has_any_bad else 0
     
     if good_already_cached > 0 or bad_already_cached > 0:
@@ -595,11 +612,28 @@ def train(
                 })
         
         console.print(f"[green]✓[/green] Extracted features for {len(all_paths_to_extract):,} photos")
-    
+
+    # Persist freshly embedded negatives by content hash, then train on the
+    # store's union (files still present + files deleted since).
+    new_negative_entries = [
+        (p, cached_features[p]) for p in new_bad_paths if p in cached_features
+    ]
+    if new_negative_entries:
+        added = record_negative_batch(
+            new_negative_entries, model_name, EMBED_PREPROCESS
+        )
+        console.print(
+            f"[green]✓[/green] Saved {added:,} negative examples to the persistent store"
+        )
+    _persisted_paths, bad_feature_map = persisted_negatives(
+        model_name, EMBED_PREPROCESS
+    )
+
     # ---- Build the training matrix ----
     # Rows: favorites+rescued+session-kept (w=1), BadPhotos/feedback-bad (w=1),
     # confirmed deletions from flagged feedback (w=hard_neg_weight).
     features_list, labels_list, weights_list = [], [], []
+    holdout_list = []         # True when the photo belongs to the eval holdout
     rescued_row_idx = []      # positives the user actively rescued
     deleted_row_idx = []      # hard negatives: photos the user deleted
     for (uuid, path, date) in good_paths:
@@ -612,6 +646,7 @@ def train(
         features_list.append(feat)
         labels_list.append(1)
         weights_list.append(1.0)
+        holdout_list.append(is_holdout(good_key(uuid, path)))
 
     # Rescued flagged photos the favorites pass missed (e.g. no longer favorited)
     for uuid in flagged_rescued:
@@ -620,6 +655,7 @@ def train(
         features_list.append(rec["feature"])
         labels_list.append(1)
         weights_list.append(1.0)
+        holdout_list.append(is_holdout(good_key(uuid)))
 
     n_flagged_deleted_used = 0
     for uuid in flagged_deleted:
@@ -628,24 +664,36 @@ def train(
         features_list.append(rec["feature"])
         labels_list.append(0)
         weights_list.append(hard_neg_weight)
+        holdout_list.append(is_holdout(good_key(uuid)))
         n_flagged_deleted_used += 1
 
-    n_bad_used = 0
-    for path in all_bad_paths:
-        feat = cached_features.get(path)
-        if feat is None:
-            continue
+    for digest, feat in bad_feature_map.items():
         features_list.append(feat)
         labels_list.append(0)
         weights_list.append(1.0)
-        n_bad_used += 1
+        holdout_list.append(is_holdout(bad_key(digest)))
 
     X = np.array(features_list)
     y = np.array(labels_list, dtype=int)
     w = np.array(weights_list, dtype=float)
+    hold = np.array(holdout_list, dtype=bool)
 
-    n_good = int((y == 1).sum())
-    n_bad = int((y == 0).sum())
+    if holdout_eval:
+        train_mask = ~hold
+        eval_mask = hold
+    else:
+        train_mask = np.ones(len(y), dtype=bool)
+        eval_mask = np.zeros(len(y), dtype=bool)
+
+    Xtr, ytr, wtr = X[train_mask], y[train_mask], w[train_mask]
+    n_good = int((ytr == 1).sum())
+    n_bad = int((ytr == 0).sum())
+    if holdout_eval:
+        console.print(
+            f"\n[bold]Holdout:[/bold] {int(eval_mask.sum()):,} photos "
+            f"({int((y[eval_mask] == 1).sum()):,} good, "
+            f"{int((y[eval_mask] == 0).sum()):,} bad) never enter training"
+        )
     console.print(f"\n[green]✓[/green] Good features: {n_good:,}")
     if n_bad > 0:
         console.print(f"[red]✓[/red] Bad features: {n_bad:,} "
@@ -660,19 +708,17 @@ def train(
     save_feature_cache({
         'good_paths': good_paths,
         'good_features': np.array([cached_features[p[1]] for p in good_paths if p[1] in cached_features]),
-        'bad_paths': all_bad_paths if has_any_bad else [],
-        'bad_features': np.array([cached_features[p] for p in all_bad_paths if p in cached_features]) if has_any_bad else None,
         'feature_cache': cached_features,
         'cutoff_date': cutoff_date,
         'backbone': model_name,
         'preprocess': EMBED_PREPROCESS,
     })
 
-    # ---- Honest evaluation (out-of-fold) ----
+    # ---- Honest evaluation (out-of-fold, training photos only) ----
     cv = {}
-    if n_bad >= 10 and min(np.bincount(y)) >= cv_folds:
+    if n_bad >= 10 and min(np.bincount(ytr)) >= cv_folds:
         console.print(f"\n[bold]Cross-validating ({cv_folds} folds)...[/bold]")
-        cv = cross_validate_head(X, y, w, folds=cv_folds)
+        cv = cross_validate_head(Xtr, ytr, wtr, folds=cv_folds)
         console.print(
             f"  ROC-AUC: {cv['roc_auc']:.3f} "
             f"(folds: {', '.join(f'{a:.3f}' for a in cv['roc_auc_folds'])})"
@@ -685,14 +731,37 @@ def train(
     console.print("\n[bold]Training preference scorer...[/bold]")
     scorer = AestheticScorer(extractor)
     scorer.train(
-        X[y == 1], X[y == 0] if n_bad > 0 else None,
-        sample_weight=w,
+        Xtr[ytr == 1], Xtr[ytr == 0] if n_bad > 0 else None,
+        sample_weight=wtr,
     )
+
+    # ---- Clean holdout evaluation (photos never used for fit or CV) ----
+    holdout_metrics = {}
+    if holdout_eval and eval_mask.any():
+        from sklearn.metrics import average_precision_score, roc_auc_score
+
+        h_scores = scorer.score(X[eval_mask])
+        h_labels = y[eval_mask]
+        if len(np.unique(h_labels)) > 1:
+            holdout_metrics = {
+                "roc_auc": float(roc_auc_score(h_labels, h_scores)),
+                "avg_precision": float(average_precision_score(h_labels, h_scores)),
+                "n_pos": int((h_labels == 1).sum()),
+                "n_neg": int((h_labels == 0).sum()),
+            }
+            console.print("\n[bold]Clean holdout (never trained on)[/bold]")
+            console.print(f"  ROC-AUC: {holdout_metrics['roc_auc']:.3f}")
+            console.print(f"  Avg precision: {holdout_metrics['avg_precision']:.3f}")
 
     # ---- Threshold calibration on the decision-relevant population ----
     # Flag rule is score < t: rescues must stay above, deletions must fall below.
     threshold_info = {}
-    if cv.get("oof") is not None and deleted_row_idx and rescued_row_idx:
+    if holdout_eval:
+        console.print(
+            "\n[dim]Holdout mode: skipping threshold calibration so the "
+            "evaluation stays clean (Scan falls back to 0.3).[/dim]"
+        )
+    elif cv.get("oof") is not None and deleted_row_idx and rescued_row_idx:
         keep_scores = cv["oof"][rescued_row_idx]
         delete_scores = cv["oof"][deleted_row_idx]
         t = calibrate_threshold(keep_scores, delete_scores)
@@ -733,12 +802,11 @@ def train(
         )
 
     # Back up the previous model before overwriting
-    backup = _backup(MODEL_PATH)
-    if backup:
-        console.print(f"[dim]Previous model backed up to {backup.name}[/dim]")
-
-    # Save model
-    scorer.save(MODEL_PATH)
+    if save_model:
+        backup = _backup(MODEL_PATH)
+        if backup:
+            console.print(f"[dim]Previous model backed up to {backup.name}[/dim]")
+        scorer.save(MODEL_PATH)
 
     # ---- Metrics + comparison with the previous run ----
     metrics = {
@@ -753,18 +821,23 @@ def train(
         "roc_auc": cv.get("roc_auc"),
         "roc_auc_folds": cv.get("roc_auc_folds"),
         "avg_precision": cv.get("avg_precision"),
+        "holdout": holdout_metrics,
         "threshold": threshold_info,
         "head": "MLP(512-128)",
     }
+    if save_model:
+        metrics_path = METRICS_FILE
+    else:
+        metrics_path = CACHE_DIR / f"eval_{model_name.replace('/', '_')}.json"
     prev = None
     if METRICS_FILE.exists():
         try:
             prev = json.loads(METRICS_FILE.read_text())
         except Exception:
             prev = None
-    METRICS_FILE.write_text(json.dumps(metrics, indent=2) + "\n")
-    console.print(f"[dim]Metrics saved to {METRICS_FILE}[/dim]")
-    if prev and prev.get("roc_auc") is not None and metrics.get("roc_auc") is not None:
+    metrics_path.write_text(json.dumps(metrics, indent=2) + "\n")
+    console.print(f"[dim]Metrics saved to {metrics_path}[/dim]")
+    if save_model and prev and prev.get("roc_auc") is not None and metrics.get("roc_auc") is not None:
         delta = metrics["roc_auc"] - prev["roc_auc"]
         arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
         console.print(
@@ -773,11 +846,11 @@ def train(
         )
 
     # ---- In-sample summary (sanity, not generalization) ----
-    console.print("\n[bold]Summary (in-sample):[/bold]")
-    good_scores = scorer.score(X[y == 1])
+    console.print("\n[bold]Summary (in-sample, training rows):[/bold]")
+    good_scores = scorer.score(Xtr[ytr == 1])
     console.print(f"  Good photos  - Mean score: {good_scores.mean():.3f}, Std: {good_scores.std():.3f}")
     if n_bad > 0:
-        bad_scores = scorer.score(X[y == 0])
+        bad_scores = scorer.score(Xtr[ytr == 0])
         console.print(f"  Bad photos   - Mean score: {bad_scores.mean():.3f}, Std: {bad_scores.std():.3f}")
         separation = good_scores.mean() - bad_scores.mean()
         console.print(f"\n  [bold]Score separation: {separation:.3f}[/bold]")
@@ -789,8 +862,11 @@ def train(
             console.print("  [red]⚠ Low separation - let Scan flag, then Learn from feedback[/red]")
 
     console.print(f"\n[bold green]✓ Training complete![/bold green]")
-    console.print(f"  Model saved to: {MODEL_PATH}")
-    console.print(f"\nNext step: [cyan]./photoscanner.sh[/cyan] (Scan) or [dim]python src/scan_photos.py --after {cutoff_date.strftime('%Y-%m-%d')}[/dim]")
+    if save_model:
+        console.print(f"  Model saved to: {MODEL_PATH}")
+        console.print(f"\nNext step: [cyan]./photoscanner.sh[/cyan] (Scan) or [dim]python src/scan_photos.py --after {cutoff_date.strftime('%Y-%m-%d')}[/dim]")
+    else:
+        console.print("[dim]Evaluation-only run; the production model was not replaced.[/dim]")
 
 
 def main():
@@ -807,6 +883,10 @@ def main():
                        help='Sample weight for confirmed deletions (hard negatives)')
     parser.add_argument('--cv-folds', type=int, default=DEFAULT_CV_FOLDS,
                        help='Folds for cross-validated evaluation')
+    parser.add_argument('--holdout-eval', action='store_true',
+                       help='Train on 90%% and report AUC on the deterministic 10%% holdout')
+    parser.add_argument('--no-save', action='store_true',
+                       help='Evaluation only: do not replace the production model or metrics')
     
     args = parser.parse_args()
     
@@ -820,6 +900,8 @@ def main():
             model_name=args.model,
             hard_neg_weight=args.hard_neg_weight,
             cv_folds=args.cv_folds,
+            holdout_eval=args.holdout_eval,
+            save_model=not args.no_save,
         )
     except Exception as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")

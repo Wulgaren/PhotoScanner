@@ -44,9 +44,12 @@ from timm.data import resolve_model_data_config, create_transform
 
 from photo_scanner.feature_extractor import (
     DEFAULT_BACKBONE,
+    load_rgb_image,
     register_finetuned_backbone,
     resolve_backbone_spec,
 )
+from photo_scanner.holdout import bad_key, good_key, is_holdout
+from photo_scanner.negative_features import content_hash
 from photo_scanner.paths import CACHE_DIR, ensure_data_dirs
 from photo_scanner.thumbs import EMBED_MAX_EDGE
 from train_model import collect_training_data
@@ -71,7 +74,9 @@ class PreferenceDataset(Dataset):
 
     def __getitem__(self, idx):
         path, label, weight = self.rows[idx]
-        img = Image.open(path).convert("RGB")
+        img = load_rgb_image(path)
+        if img is None:
+            raise RuntimeError(f"Could not decode training image: {path}")
         if self.max_edge and max(img.size) > self.max_edge:
             img = img.copy()
             img.thumbnail((self.max_edge, self.max_edge), Image.Resampling.LANCZOS)
@@ -80,16 +85,29 @@ class PreferenceDataset(Dataset):
 
 
 def build_rows(cutoff: datetime, sample_size: int, rescue_weight: float = 2.0,
-               bad_weight: float = 1.0) -> list[tuple]:
-    """Collect (path, label, weight) rows: favorites+rescues vs BadPhotos/feedback-bad."""
+               bad_weight: float = 1.0, exclude_holdout: bool = True) -> list[tuple]:
+    """Collect (path, label, weight) rows: favorites+rescues vs BadPhotos/feedback-bad.
+
+    With exclude_holdout, photos in the deterministic evaluation holdout are
+    dropped so the backbone cannot learn them.
+    """
     data = collect_training_data(cutoff, sample_size)
     rescued = data["rescued_uuids"]
     rows = []
+    skipped = 0
     for uuid, path, _date in data["good_paths"]:
+        if exclude_holdout and is_holdout(good_key(uuid, str(path))):
+            skipped += 1
+            continue
         weight = rescue_weight if normalize_uuid(uuid) in rescued else 1.0
         rows.append((str(path), 1, weight))
     for path in data["bad_paths"]:
+        if exclude_holdout and is_holdout(bad_key(content_hash(path))):
+            skipped += 1
+            continue
         rows.append((str(path), 0, bad_weight))
+    if skipped:
+        console.print(f"[dim]Held out {skipped:,} photos from fine-tuning[/dim]")
     return rows
 
 
@@ -146,7 +164,8 @@ def fine_tune(args):
     console.print(f"Device: {device} · Base backbone: {args.backbone}")
 
     # --- rows ---
-    rows = build_rows(cutoff, args.sample_size, args.rescue_weight, args.bad_weight)
+    rows = build_rows(cutoff, args.sample_size, args.rescue_weight, args.bad_weight,
+                      exclude_holdout=not args.include_holdout)
     if not rows:
         console.print("[red]No training images found.[/red]")
         return
@@ -260,6 +279,8 @@ def main():
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--overwrite", action="store_true",
                         help="Replace an existing weights file for --tag")
+    parser.add_argument("--include-holdout", action="store_true",
+                        help="Train on the evaluation holdout too (disables clean evaluation)")
     args = parser.parse_args()
     fine_tune(args)
 
