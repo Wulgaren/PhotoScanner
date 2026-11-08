@@ -2,21 +2,21 @@
 """
 Export one chronological review window to the private phone-site repo.
 
-Window 1 starts at the scan's `after_date` and covers `--window-months` months.
-Every photo in the window is included, oldest first. Photos scoring below the
-threshold are pre-marked for deletion. The site is replaced per window; the
-phone keeps selections by UUID in localStorage.
+Window 1 starts at the scan's `after_date`. Each window holds at most
+`--window-size` photos, oldest first. Every photo in the window is included;
+photos scoring below the threshold are pre-marked for deletion. The site is
+replaced per window; the phone keeps selections by UUID in localStorage.
 """
 
 from __future__ import annotations
 
 import argparse
-import calendar
 import hashlib
 import json
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +39,7 @@ console = Console()
 SITE_THUMB_MAX = 720
 SITE_THUMB_QUALITY = 72
 DEFAULT_THRESHOLD = 0.5
-DEFAULT_WINDOW_MONTHS = 1
+DEFAULT_WINDOW_SIZE = 1000
 SITE_DIR_NAME = "interactivephotoreview"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
@@ -150,68 +150,86 @@ def parse_datetime(value: Any) -> datetime | None:
     return parsed
 
 
-def add_months(value: datetime, months: int) -> datetime:
-    """Calendar-month addition that clamps to the target month's last day."""
-    month_index = value.month - 1 + months
-    year = value.year + month_index // 12
-    month = month_index % 12 + 1
-    day = min(value.day, calendar.monthrange(year, month)[1])
-    return value.replace(year=year, month=month, day=day)
-
-
-def window_start(results: dict, photos: list[dict]) -> datetime:
-    """Scan cutoff when present, otherwise the earliest dated photo."""
-    cutoff = parse_datetime(results.get("after_date"))
-    if cutoff is not None:
-        return cutoff
-    dates = [parse_datetime(photo.get("date")) for photo in photos]
-    present = [date for date in dates if date is not None]
-    if not present:
-        return datetime.now(timezone.utc)
-    return min(present).replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def last_photo_date(photos: list[dict]) -> datetime | None:
-    dates = [parse_datetime(photo.get("date")) for photo in photos]
-    present = [date for date in dates if date is not None]
-    return max(present) if present else None
-
-
-def window_bounds(
-    start: datetime, months: int, index: int
-) -> tuple[datetime, datetime]:
-    """Inclusive start / exclusive end for a 1-based window index."""
-    if index < 1:
-        raise ValueError("window index must be 1 or greater")
-    begin = add_months(start, (index - 1) * months)
-    end = add_months(start, index * months)
-    return begin, end
-
-
-def total_windows(start: datetime, months: int, last: datetime | None) -> int:
-    if last is None or last < start:
-        return 0
-    count = 0
-    cursor = start
-    while cursor <= last:
-        count += 1
-        cursor = add_months(cursor, months)
-    return count
-
-
-def select_window(
-    photos: list[dict], start: datetime, end: datetime
-) -> list[dict]:
-    """Every dated photo in [start, end), oldest first."""
+def chronological_photos(photos: list[dict]) -> list[dict]:
+    """Dated photos oldest first, with ties ordered by score."""
     rows: list[tuple[datetime, float, dict]] = []
     for photo in photos:
         when = parse_datetime(photo.get("date"))
-        if when is None or when < start or when >= end:
+        if when is None:
             continue
         score = photo.get("score")
         rows.append((when, float(score) if score is not None else 0.0, photo))
     rows.sort(key=lambda row: (row[0], row[1]))
     return [photo for _, _, photo in rows]
+
+
+def window_start_index(
+    photos: list[dict],
+    *,
+    start: datetime | None,
+    after_uuid: str | None,
+) -> int:
+    """Index of the next window's first photo in a chronological list."""
+    if after_uuid:
+        key = normalize_uuid(after_uuid)
+        for index, photo in enumerate(photos):
+            if photo_id(photo) == key:
+                return index + 1
+        if start is None:
+            raise ValueError(f"previous window photo {key} is not in this scan")
+    if start is not None:
+        for index, photo in enumerate(photos):
+            when = parse_datetime(photo.get("date"))
+            if when is not None and when >= start:
+                return index
+        return len(photos)
+    return 0
+
+
+def plan_window(
+    photos: list[dict],
+    *,
+    index: int,
+    size: int,
+    start: datetime | None = None,
+    after_uuid: str | None = None,
+    offset: int | None = None,
+) -> dict:
+    """Pick at most `size` photos and build the metadata stored in data.json."""
+    if index < 1:
+        raise ValueError("window index must be 1 or greater")
+    if size < 1:
+        raise ValueError("window size must be 1 or greater")
+    ordered = chronological_photos(photos)
+    begin = offset
+    if begin is None:
+        begin = window_start_index(ordered, start=start, after_uuid=after_uuid)
+    if begin < 0 or begin >= len(ordered):
+        raise ValueError("no photos left for this window")
+    remaining = len(ordered) - begin
+    chunk = ordered[begin : begin + size]
+    first = parse_datetime(chunk[0].get("date"))
+    if first is None:
+        raise ValueError("window photo has no date")
+    if begin + size < len(ordered):
+        end = parse_datetime(ordered[begin + size].get("date"))
+    else:
+        end = parse_datetime(chunk[-1].get("date")) + timedelta(seconds=1)
+    if end is None:
+        raise ValueError("window end has no date")
+    last = parse_datetime(chunk[-1].get("date"))
+    if last is None:
+        raise ValueError("window photo has no date")
+    window = {
+        "index": index,
+        "total": (index - 1) + ceil(remaining / size),
+        "size": size,
+        "start": first.isoformat(),
+        "end": end.isoformat(),
+        "label": format_window_label(first, last + timedelta(days=1)),
+        "cursor": photo_id(chunk[-1]),
+    }
+    return {"photos": chunk, "window": window}
 
 
 def format_window_label(start: datetime, end: datetime) -> str:
@@ -375,28 +393,29 @@ def current_window(data_path: Path) -> dict | None:
 
 
 def resolve_window(
-    data_path: Path,
+    existing: dict | None,
     *,
     requested_index: int | None,
     next_window: bool,
-    months: int,
+    size: int,
 ) -> tuple[int, int]:
-    """Pick the window index and month size, advancing from the current data."""
-    existing = current_window(data_path)
+    """Pick the window index and size, advancing from the current data."""
     if next_window:
         if not existing:
             raise ValueError("no current window to advance from")
         index = int(existing.get("index", 0)) + 1
-        months = int(existing.get("months", months))
-        return index, months
+        size = int(existing.get("size", size))
+        return index, size
     if requested_index is not None:
-        return requested_index, months
+        if existing and requested_index == int(existing.get("index", 0)):
+            size = int(existing.get("size", size))
+        return requested_index, size
     if existing:
         raise ValueError(
             f"site already holds window {existing.get('index')}; "
             "use --next-window or --window-index"
         )
-    return 1, months
+    return 1, size
 
 
 def commit_and_push(out_dir: Path, message: str, *, squash: bool = False) -> None:
@@ -454,15 +473,8 @@ def commit_and_push(out_dir: Path, message: str, *, squash: bool = False) -> Non
     console.print("[green]✓[/green] Pushed site repo")
 
 
-def export_window(
-    results_path: Path,
-    out_dir: Path,
-    *,
-    threshold: float,
-    months: int,
-    index: int,
-) -> dict[str, Any]:
-    results = json.loads(results_path.read_text())
+def eligible_photos(results: dict) -> list[dict]:
+    """Scan photos that can be reviewed: dated, still present, not video or hidden."""
     all_photos = [
         photo
         for photo in results.get("photos") or []
@@ -507,16 +519,20 @@ def export_window(
         if dropped:
             console.print(f"[dim]Dropped {dropped:,} hidden photos[/dim]")
 
-    start = window_start(results, all_photos)
-    last = last_photo_date(all_photos)
-    total = total_windows(start, months, last)
-    if total == 0:
-        raise ValueError("scan has no dated photos")
-    if index > total:
-        raise ValueError(f"window {index} is past the last window ({total})")
+    return chronological_photos(all_photos)
 
-    begin, end = window_bounds(start, months, index)
-    photos = select_window(all_photos, begin, end)
+
+def export_window(
+    results_path: Path,
+    out_dir: Path,
+    *,
+    threshold: float,
+    plan: dict,
+    all_photos: list[dict],
+) -> dict[str, Any]:
+    results = json.loads(results_path.read_text())
+    photos = plan["photos"]
+    window = plan["window"]
     series = photos_by_series(all_photos)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -535,14 +551,6 @@ def export_window(
         if number % 100 == 0 or number == len(photos):
             console.print(f"[dim]Thumbs {number}/{len(photos)}[/dim]")
 
-    window = {
-        "index": index,
-        "total": total,
-        "months": months,
-        "start": begin.isoformat(),
-        "end": end.isoformat(),
-        "label": format_window_label(begin, end),
-    }
     data_path = write_data(
         out_dir,
         items,
@@ -579,10 +587,10 @@ def main() -> None:
         help=f"Pre-mark photos below this score (default {DEFAULT_THRESHOLD})",
     )
     parser.add_argument(
-        "--window-months",
+        "--window-size",
         type=int,
-        default=DEFAULT_WINDOW_MONTHS,
-        help=f"Months per window for a fresh export (default {DEFAULT_WINDOW_MONTHS})",
+        default=DEFAULT_WINDOW_SIZE,
+        help=f"Photos per window for a fresh export (default {DEFAULT_WINDOW_SIZE})",
     )
     parser.add_argument(
         "--window-index",
@@ -626,50 +634,61 @@ def main() -> None:
         raise SystemExit(1)
 
     results = json.loads(results_path.read_text())
-    photos = [
-        photo
-        for photo in results.get("photos") or []
-        if normalize_uuid(photo.get("uuid"))
-    ]
-    start = window_start(results, photos)
-    last = last_photo_date(photos)
-    if args.window_months < 1:
-        console.print("[red]--window-months must be 1 or greater[/red]")
+    all_photos = eligible_photos(results)
+    if args.window_size < 1:
+        console.print("[red]--window-size must be 1 or greater[/red]")
         raise SystemExit(1)
 
+    existing = current_window(out_dir / "data.json")
     try:
-        index, months = resolve_window(
-            out_dir / "data.json",
+        index, size = resolve_window(
+            existing,
             requested_index=args.window_index,
             next_window=args.next_window,
-            months=args.window_months,
+            size=args.window_size,
         )
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
 
-    total = total_windows(start, months, last)
-    if index < 1 or index > total:
-        console.print(
-            f"[red]Window {index} is outside 1–{total}.[/red]"
+    start = None
+    after_uuid = None
+    offset = None
+    if args.next_window:
+        start = parse_datetime((existing or {}).get("end"))
+        after_uuid = (existing or {}).get("cursor")
+    elif args.window_index is not None:
+        if existing and index == int(existing.get("index", 0)):
+            start = parse_datetime(existing.get("start"))
+        else:
+            offset = (index - 1) * size
+
+    try:
+        plan = plan_window(
+            all_photos,
+            index=index,
+            size=size,
+            start=start,
+            after_uuid=after_uuid,
+            offset=offset,
         )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
 
-    begin, end = window_bounds(start, months, index)
+    window = plan["window"]
     threshold = args.threshold
     console.print(f"Results: [cyan]{results_path}[/cyan]")
     console.print(f"Site: [cyan]{out_dir}[/cyan]")
-    console.print(
-        f"Window [bold]{index}/{total}[/bold] · {format_window_label(begin, end)}"
-    )
-    console.print(f"Threshold: {threshold}  months: {months}")
+    console.print(f"Window [bold]{window['index']}/{window['total']}[/bold] · {window['label']}")
+    console.print(f"Threshold: {threshold}  size: {size}")
 
     result = export_window(
         results_path,
         out_dir,
         threshold=args.threshold,
-        months=months,
-        index=index,
+        plan=plan,
+        all_photos=all_photos,
     )
     marked = sum(1 for item in result["items"] if item["default_delete"])
     console.print(

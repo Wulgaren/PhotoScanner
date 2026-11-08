@@ -119,17 +119,17 @@ python src/export_review_site.py --next-window --push --squash-history
 | `--results` | latest scan | Scan JSON |
 | `--out` | `../interactivephotoreview` | Site repo |
 | `--threshold` | `0.5` | Photos below this are pre-marked for deletion |
-| `--window-months` | `1` | Months per fresh window |
+| `--window-size` | `1000` | Photos per fresh window |
 | `--window-index` | first run only | Use a specific 1-based window |
 | `--next-window` | off | Advance from the window in `data.json` |
 | `--push` | off | Commit and push the site repo |
 | `--squash-history` | off | Replace the site repo history with one commit |
 
-Window 1 starts at the scan's `after_date` and includes every photo in range,
-oldest first. Videos and photos in the Hidden album are excluded (Scan already
-skips videos; the exporter checks the Photos DB for both). Tap toggles delete,
-hold opens fullscreen, and **Save IDs** copies UUIDs / downloads a `.txt` for the
-photos up to the furthest card you have tapped. Selections live in
+Window 1 starts at the scan's `after_date` and includes up to `--window-size`
+photos, oldest first. Videos and photos in the Hidden album are excluded (Scan
+already skips videos; the exporter checks the Photos DB for both). Tap toggles
+delete, hold opens fullscreen, and **Save IDs** copies UUIDs / downloads a `.txt`
+for the photos up to the furthest card you have tapped. Selections live in
 `localStorage`, so revisiting a window keeps them.
 
 Cross-device sync uses Netlify Blobs. Tap **Local only** in the header, then

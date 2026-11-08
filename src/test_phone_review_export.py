@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime
 
 import pytest
 
 from export_review_site import (
-    add_months,
     build_item,
     format_window_label,
     is_video_path,
     load_captions,
     load_hidden_uuids,
     load_video_uuids,
+    plan_window,
     resolve_window,
-    select_window,
     should_premark,
-    total_windows,
-    window_bounds,
 )
 from learn_from_feedback import parse_uuid_text
 
@@ -39,37 +35,43 @@ def photo(uuid: str, date: str, score: float) -> dict:
     }
 
 
-def test_add_months_clamps_to_last_day():
-    assert add_months(dt("2024-01-31T00:00:00+00:00"), 1) == dt(
-        "2024-02-29T00:00:00+00:00"
-    )
-    assert add_months(dt("2023-12-18T00:00:00+00:00"), 1) == dt(
-        "2024-01-18T00:00:00+00:00"
-    )
-
-
-def test_window_bounds_and_total():
-    start = dt("2023-11-18T00:00:00+00:00")
-    assert window_bounds(start, 1, 1) == (start, dt("2023-12-18T00:00:00+00:00"))
-    assert window_bounds(start, 1, 2) == (
-        dt("2023-12-18T00:00:00+00:00"),
-        dt("2024-01-18T00:00:00+00:00"),
-    )
-    assert total_windows(start, 1, dt("2024-01-17T23:00:00+00:00")) == 2
-    assert total_windows(start, 1, dt("2024-01-18T00:00:00+00:00")) == 3
-
-
-def test_select_window_is_inclusive_start_exclusive_end_and_chronological():
-    start = dt("2023-11-18T00:00:00+00:00")
-    end = dt("2023-12-18T00:00:00+00:00")
+def test_plan_window_starts_after_previous_end_and_takes_size():
     photos = [
-        photo("C", "2023-12-17T23:00:00+00:00", 0.9),
-        photo("A", "2023-11-18T00:00:00+00:00", 0.2),
-        photo("B", "2023-12-01T10:00:00+00:00", 0.8),
-        photo("X", "2023-12-18T00:00:00+00:00", 0.1),
-        photo("Y", "2023-11-17T23:59:59+00:00", 0.1),
+        photo("A", "2024-01-01T00:00:00+00:00", 0.9),
+        photo("B", "2024-01-02T00:00:00+00:00", 0.9),
+        photo("C", "2024-01-03T00:00:00+00:00", 0.9),
+        photo("D", "2024-01-04T00:00:00+00:00", 0.9),
+        photo("E", "2024-01-05T00:00:00+00:00", 0.9),
     ]
-    assert [p["uuid"] for p in select_window(photos, start, end)] == ["A", "B", "C"]
+    plan = plan_window(
+        photos,
+        index=3,
+        size=2,
+        start=dt("2024-01-03T00:00:00+00:00"),
+    )
+    assert [p["uuid"] for p in plan["photos"]] == ["C", "D"]
+    assert plan["window"]["total"] == 4
+    assert plan["window"]["label"] == "Jan 3 – Jan 4, 2024"
+    assert plan["window"]["end"] == "2024-01-05T00:00:00+00:00"
+
+
+def test_plan_window_resumes_after_cursor_on_identical_timestamps():
+    when = "2024-01-01T00:00:00+00:00"
+    photos = [
+        photo("A", when, 0.9),
+        photo("B", when, 0.8),
+        photo("C", when, 0.7),
+        photo("D", when, 0.6),
+    ]
+    plan = plan_window(
+        photos,
+        index=4,
+        size=2,
+        start=dt(when),
+        after_uuid="d",
+    )
+    assert [p["uuid"] for p in plan["photos"]] == ["C", "B"]
+    assert plan["window"]["cursor"] == "B"
 
 
 def test_should_premark_uses_plain_threshold_even_for_best_shots():
@@ -93,21 +95,25 @@ def test_format_window_label_same_and_cross_year():
     )
 
 
-def test_resolve_window_starts_at_one_then_advances(tmp_path):
-    data_path = tmp_path / "data.json"
+def test_resolve_window_starts_at_one_then_advances():
     assert resolve_window(
-        data_path, requested_index=None, next_window=False, months=1
-    ) == (1, 1)
+        None, requested_index=None, next_window=False, size=1000
+    ) == (1, 1000)
 
-    data_path.write_text(json.dumps({"window": {"index": 1, "months": 1}}))
+    existing = {"index": 2, "size": 1000}
     with pytest.raises(ValueError):
-        resolve_window(data_path, requested_index=None, next_window=False, months=1)
+        resolve_window(
+            existing, requested_index=None, next_window=False, size=1000
+        )
     assert resolve_window(
-        data_path, requested_index=None, next_window=True, months=1
-    ) == (2, 1)
+        existing, requested_index=None, next_window=True, size=1000
+    ) == (3, 1000)
     assert resolve_window(
-        data_path, requested_index=4, next_window=False, months=2
-    ) == (4, 2)
+        {"index": 2}, requested_index=None, next_window=True, size=1000
+    ) == (3, 1000)
+    assert resolve_window(
+        existing, requested_index=4, next_window=False, size=500
+    ) == (4, 500)
 
 
 def test_video_paths_are_rejected():
