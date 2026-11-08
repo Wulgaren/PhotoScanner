@@ -19,6 +19,7 @@ from photo_scanner.feature_extractor import (
     DEFAULT_BACKBONE,
     AestheticScorer,
     FeatureExtractor,
+    saved_backbone_from_model,
 )
 from photo_scanner.paths import CACHE_DIR, OUTPUT_DIR, ensure_data_dirs
 from photo_scanner.thumbs import (
@@ -382,12 +383,14 @@ def main():
                        help='Batch size for feature extraction')
     parser.add_argument('--limit', type=int, default=None,
                        help='Limit number of photos to scan (for testing)')
-    parser.add_argument('--model', type=str, default=DEFAULT_BACKBONE,
-                       help=f'timm backbone (must match training; default: {DEFAULT_BACKBONE})')
+    parser.add_argument('--model', type=str, default=None,
+                       help='timm backbone (default: the backbone saved in the model, '
+                            f'else {DEFAULT_BACKBONE})')
     
     args = parser.parse_args()
     
     after = datetime.strptime(args.after, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    model_name = args.model or saved_backbone_from_model() or DEFAULT_BACKBONE
     
     try:
         scan(
@@ -395,7 +398,7 @@ def main():
             score_threshold=args.threshold,
             batch_size=args.batch_size,
             limit=args.limit,
-            model_name=args.model,
+            model_name=model_name,
         )
     except Exception as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")

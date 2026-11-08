@@ -111,7 +111,8 @@ def calibrate_threshold(
 
     values = np.unique(np.concatenate([keep, dele]))
     candidates = np.concatenate([[values[0] - 1e-6], (values[:-1] + values[1:]) / 2.0, [values[-1]]])
-    best_t, best_f1 = None, -1.0
+    best_f1 = -1.0
+    best_candidates: list[float] = []
     for t in candidates:
         tp = int(np.sum(dele < t))
         fp = int(np.sum(keep < t))
@@ -120,6 +121,12 @@ def calibrate_threshold(
         precision = tp / (tp + fp)
         recall = tp / dele.size
         f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
-        if f1 > best_f1:
-            best_t, best_f1 = float(t), f1
-    return best_t
+        if f1 > best_f1 + 1e-12:
+            best_f1, best_candidates = f1, [float(t)]
+        elif abs(f1 - best_f1) <= 1e-12:
+            best_candidates.append(float(t))
+    if not best_candidates:
+        return None
+    # A wide tie means any cut in the gap works; take its centre instead of
+    # the lowest edge (which produced near-zero thresholds on clean splits).
+    return float(np.median(best_candidates))

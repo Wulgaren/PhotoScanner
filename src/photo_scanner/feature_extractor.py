@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
@@ -31,6 +34,46 @@ DEFAULT_BACKBONE = "vit_base_patch16_clip_224.openai"
 # Registry of fine-tuned backbones produced by train_finetune.py:
 # {"<tag>": {"path": "<.pth>", "base_backbone": "<timm name>", "created": iso}}
 FINETUNED_REGISTRY = CACHE_DIR / "finetuned_backbones.json"
+
+FFMPEG = shutil.which("ffmpeg")
+
+
+def decode_with_ffmpeg(path: Union[str, Path]) -> Optional[Image.Image]:
+    """Decode formats Pillow cannot open (e.g. HEIC renamed to .JPG) via ffmpeg.
+
+    Returns an RGB image, or None when ffmpeg is absent or the file is
+    undecodable. No temp files: the first frame is piped back as JPEG bytes.
+    """
+    if not FFMPEG:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                FFMPEG, "-v", "error", "-i", str(path),
+                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    try:
+        return Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    except Exception:
+        return None
+
+
+def load_rgb_image(path: Union[str, Path]) -> Optional[Image.Image]:
+    """Open an image as RGB, falling back to ffmpeg when Pillow rejects it."""
+    try:
+        return Image.open(path).convert("RGB")
+    except Exception as pil_error:
+        img = decode_with_ffmpeg(path)
+        if img is None:
+            print(f"Error loading {path}: {pil_error}")
+        return img
 
 
 def load_finetuned_registry() -> dict:
@@ -66,20 +109,31 @@ def resolve_backbone_spec(model_name: str) -> tuple[str, Optional[Path]]:
     return model_name, None
 
 
-def recommended_threshold_from_model(model_path: Union[str, Path, None] = None) -> Optional[float]:
-    """Read Train's calibrated flag threshold from a model pkl (no backbone load)."""
+def load_model_metadata(model_path: Union[str, Path, None] = None) -> dict:
+    """Read a saved preference model's metadata without loading the backbone."""
     import pickle
 
     path = Path(model_path) if model_path else (CACHE_DIR / "aesthetic_model.pkl")
     if not path.exists():
-        return None
+        return {}
     try:
         with open(path, "rb") as f:
             data = pickle.load(f)
-        value = data.get("recommended_threshold")
-        return float(value) if value is not None else None
     except Exception:
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def recommended_threshold_from_model(model_path: Union[str, Path, None] = None) -> Optional[float]:
+    """Read Train's calibrated flag threshold from a model pkl (no backbone load)."""
+    value = load_model_metadata(model_path).get("recommended_threshold")
+    return float(value) if value is not None else None
+
+
+def saved_backbone_from_model(model_path: Union[str, Path, None] = None) -> Optional[str]:
+    """Backbone tag the model was trained with, so callers do not have to guess."""
+    value = load_model_metadata(model_path).get("backbone")
+    return str(value) if value else None
 
 
 class FeatureExtractor:
@@ -150,15 +204,13 @@ class FeatureExtractor:
     
     def load_image(self, image_path: Union[str, Path]) -> Optional[torch.Tensor]:
         """Load and preprocess an image."""
-        try:
-            img = Image.open(image_path).convert('RGB')
-            if self.max_edge and max(img.size) > self.max_edge:
-                img = img.copy()
-                img.thumbnail((self.max_edge, self.max_edge), Image.Resampling.LANCZOS)
-            return self.transform(img)
-        except Exception as e:
-            print(f"Error loading {image_path}: {e}")
+        img = load_rgb_image(image_path)
+        if img is None:
             return None
+        if self.max_edge and max(img.size) > self.max_edge:
+            img = img.copy()
+            img.thumbnail((self.max_edge, self.max_edge), Image.Resampling.LANCZOS)
+        return self.transform(img)
     
     @torch.no_grad()
     def extract_single(self, image_path: Union[str, Path]) -> Optional[np.ndarray]:

@@ -71,3 +71,16 @@ def test_calibrate_threshold_prefers_useful_over_degenerate(store):
     flagged_delete = sum(s < t for s in delete)
     assert flagged_delete >= 8          # catches nearly all real deletions
     assert flagged_keep <= 5            # without drowning them in rescues
+
+
+def test_calibrate_threshold_centres_a_wide_tie(store):
+    # Perfect separation: every cut between the classes scores F1=1.0.
+    # Returning the lowest edge yields a near-zero threshold that flags nothing.
+    keep = [0.90 + 0.001 * i for i in range(20)]
+    delete = [0.001 * i for i in range(1, 21)]
+    t = store.calibrate_threshold(keep, delete)
+    assert t is not None
+    assert 0.2 < t < 0.8                # centre of the gap, not 1e-6
+    assert all(s >= t for s in keep)
+    assert all(s < t for s in delete)
+

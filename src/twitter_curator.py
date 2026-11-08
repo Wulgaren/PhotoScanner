@@ -20,6 +20,7 @@ from photo_scanner.feature_extractor import (
     DEFAULT_BACKBONE,
     AestheticScorer,
     FeatureExtractor,
+    saved_backbone_from_model,
 )
 from photo_scanner.paths import CACHE_DIR, CONFIG_PATH, MODEL_PATH, ensure_data_dirs
 
@@ -94,7 +95,8 @@ class ImageScorer:
             return False
         
         print("Loading aesthetic model...")
-        self.extractor = FeatureExtractor(model_name=DEFAULT_BACKBONE)
+        backbone = saved_backbone_from_model(MODEL_PATH) or DEFAULT_BACKBONE
+        self.extractor = FeatureExtractor(model_name=backbone)
         self.scorer = AestheticScorer(self.extractor)
         self.scorer.load(MODEL_PATH)
         self.loaded = True
