@@ -60,10 +60,12 @@ def record_flagged_batch(
     entries: Iterable[tuple[str, np.ndarray, float]],
     backbone: str,
     preprocess: str,
+    window: Optional[int] = None,
 ) -> int:
     """Append flagged-photo features for the current backbone.
 
     entries: (uuid, feature_vector, score). Newest write per uuid wins.
+    window: review window the photo was shown in, kept for dataset building.
     Returns the number of records stored.
     """
     entries = list(entries)
@@ -72,19 +74,24 @@ def record_flagged_batch(
     store = load_flagged_features()
     slot = store.setdefault(store_key(backbone, preprocess), {})
     now = datetime.now(timezone.utc).isoformat()
+    stored = 0
     for uuid, feature, score in entries:
         if not uuid:
             continue
         existing = slot.get(uuid)
         if existing is not None and str(existing.get("when", "")) >= now:
             continue
-        slot[uuid] = {
+        record = {
             "feature": np.asarray(feature, dtype=np.float32),
             "score": float(score),
             "when": now,
         }
+        if window is not None:
+            record["window"] = int(window)
+        slot[uuid] = record
+        stored += 1
     _write_store(store)
-    return len(entries)
+    return stored
 
 
 def flagged_for_backbone(backbone: str, preprocess: str) -> dict[str, FlaggedRecord]:

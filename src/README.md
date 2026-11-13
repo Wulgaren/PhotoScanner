@@ -124,6 +124,23 @@ python src/export_review_site.py --next-window --push --squash-history
 | `--next-window` | off | Advance from the window in `data.json` |
 | `--push` | off | Commit and push the site repo |
 | `--squash-history` | off | Replace the site repo history with one commit |
+| `--skip-features` | off | Do not embed the window (loses pairwise training signal) |
+| `--backfill-features` | off | Embed the window already in `data.json`, without rewriting the site |
+| `--backfill-window N` | off | Embed an earlier review window after its thumbs were pruned |
+| `--no-build-pairs` | off | Skip refreshing the pair dataset after this export |
+
+Every export embeds all photos in the window and stores the vectors in
+`.cache/flagged_features.pkl`, tagged with the window index. Both sides of a
+pair need a vector, so unmarked photos are captured too. A photo you delete
+later leaves Photos, but its embedding survives, which is the only way your
+review decisions stay trainable. Deleting a window's thumbs does not touch the
+store, so labels outlive the site. Run `--backfill-features` after a review to
+capture a window that was exported before this existed.
+
+After a successful export the pair dataset is rebuilt automatically, holding out
+the window you just finished. `--no-build-pairs` turns that off. Marks for the
+window you just reviewed only enter the dataset once you import them with
+`move_to_album --uuids-file` and rebuild.
 
 Window 1 starts at the scan's `after_date` and includes up to `--window-size`
 photos, oldest first. Videos and photos in the Hidden album are excluded (Scan
@@ -140,6 +157,58 @@ manual JSON backup.
 
 `--squash-history` keeps the private repo at roughly one window's size instead
 of accumulating every batch in Git history.
+
+## Pair dataset (training signal from review)
+
+Builds a frozen set of preference pairs from your phone review marks: a photo
+you marked for delete loses to an unmarked photo captured in the same window.
+Only photos shown together are compared, so "better" means something.
+
+```bash
+python src/build_pair_dataset.py --dry-run
+python src/build_pair_dataset.py
+python src/build_pair_dataset.py --test-groups 1 --seed 42
+```
+
+The split unit is the review **window**, not the save session: two saves in one
+window compare against the same unmarked photos, so their pairs are not
+independent. A window never straddles train and test. Fewer than two windows
+with stored features is an error, because nothing can be held out.
+
+Writes `.cache/pair_dataset.npz` (differences, labels, groups, split masks) and
+`.cache/pair_dataset.json` (metadata and version). Treat it as frozen: rebuilding
+changes the exam, so rebuild only when you mean to.
+
+Requires features captured at export time. Without them there are no pairs.
+
+## Backfill an earlier window
+
+A window's site thumbnails are pruned when the next window is exported, but the
+photos in it are usually still in Photos. `--backfill-window` rebuilds an
+earlier window by walking back from the published window's start date and
+embeds it, so old review marks become trainable.
+
+```bash
+python src/export_review_site.py --backfill-window 6
+python src/export_review_site.py --backfill-window 5
+```
+
+The walk counts whole windows of photos, not months. Photos you deleted since
+the review are gone from Photos, so a rebuilt window can drift slightly from
+what you saw; the date range is the stable part. Checked against real saves,
+windows 5 and 6 reproduce their exact original date ranges.
+
+Then hold out a window with marks rather than an empty one:
+
+```bash
+python src/build_pair_dataset.py --holdout-window 6
+```
+
+Pairing each marked photo against 40 random unmarked photos gives a weak
+signal. Pairing against the 8 unmarked photos most similar to it (the confusing
+ones) lifts held-out AUC from about 0.56 to 0.63. Prefer mining hard winners.
+
+
 
 ## Move to album
 

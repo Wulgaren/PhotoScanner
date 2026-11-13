@@ -327,6 +327,67 @@ def build_item(
     return item
 
 
+def embedding_backbone() -> str:
+    """Backbone tag the saved preference model uses, else the default."""
+    from photo_scanner.feature_extractor import DEFAULT_BACKBONE, saved_backbone_from_model
+
+    return saved_backbone_from_model() or DEFAULT_BACKBONE
+
+
+def capture_features(
+    photos: list[dict],
+    window_index: int,
+    thumbs_dir: Path,
+    *,
+    batch_size: int = 32,
+) -> tuple[int, int]:
+    """Embed every photo in a window and store the vector by UUID.
+
+    Both sides of a pair need a vector, so unmarked photos are captured too.
+    A photo you delete later leaves Photos, but the vector stays usable.
+    Returns (stored, missing).
+    """
+    from photo_scanner.feedback_features import record_flagged_batch
+    from photo_scanner.feature_extractor import FeatureExtractor
+    from photo_scanner.thumbs import EMBED_PREPROCESS
+
+    backbone = embedding_backbone()
+    console.print(f"[dim]Embedding window {window_index} with {backbone}...[/dim]")
+    extractor = FeatureExtractor(model_name=backbone)
+
+    uuid_by_path: dict[str, str] = {}
+    score_by_uuid: dict[str, float] = {}
+    resolvable = 0
+    for photo in photos:
+        item_id = photo_id(photo)
+        if not item_id:
+            continue
+        resolvable += 1
+        src = resolve_readable_image(photo.get("path") or "", uuid=photo.get("uuid"))
+        if src is None:
+            thumb = thumbs_dir / site_thumb_name(item_id)
+            src = thumb if thumb.is_file() else None
+        if src is None:
+            continue
+        uuid_by_path[str(src)] = item_id
+        score = photo.get("score")
+        score_by_uuid[item_id] = float(score) if score is not None else 0.0
+
+    features = extractor.extract_batch(list(uuid_by_path), batch_size=batch_size)
+    entries = [
+        (uuid_by_path[path], feature, score_by_uuid[uuid_by_path[path]])
+        for path, feature in features.items()
+        if path in uuid_by_path
+    ]
+    stored = record_flagged_batch(
+        entries, backbone, EMBED_PREPROCESS, window=window_index
+    )
+    # A photo with no readable source, or one whose vector already existed, is
+    # not a failure; report only the photos that produced no vector at all.
+    missing = resolvable - len({uuid for uuid, _, _ in entries})
+    return stored, max(missing, 0)
+
+
 def prune_thumbs(site_dir: Path, items: list[dict]) -> int:
     """Delete generated thumbnails no longer referenced by data.json."""
     thumbs_dir = site_dir / "thumbs"
@@ -390,6 +451,75 @@ def current_window(data_path: Path) -> dict | None:
         return None
     window = payload.get("window")
     return window if isinstance(window, dict) else None
+
+
+def photos_for_backfill(data_path: Path, all_photos: list[dict]) -> list[dict]:
+    """Scan photo records for the window currently published in data.json."""
+    try:
+        payload = json.loads(data_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    uuids = {
+        normalize_uuid(item.get("uuid") or item.get("id"))
+        for item in payload.get("photos") or []
+    }
+    uuids.discard("")
+    if not uuids:
+        return []
+    return [
+        photo for photo in all_photos if normalize_uuid(photo.get("uuid")) in uuids
+    ]
+
+
+def window_start_before(
+    all_photos: list[dict], start: datetime, size: int, steps: int
+) -> datetime:
+    """Walk `steps` windows of `size` photos backwards from `start`.
+
+    Windows are counted in photos, not months, so earlier windows are rebuilt
+    by taking the last `size` photos before the next window's start. Photos
+    deleted since the review are already gone, which is why this can only
+    reproduce a window approximately; the date range is the stable part.
+    """
+    ordered = chronological_photos(all_photos)
+    cursor = start
+    for _ in range(steps):
+        earlier = [
+            photo
+            for photo in ordered
+            if (when := parse_datetime(photo.get("date"))) is not None and when < cursor
+        ]
+        if not earlier:
+            raise ValueError("no photos left before this window")
+        cursor = parse_datetime(earlier[-size:][0].get("date"))
+        if cursor is None:
+            raise ValueError("window photo has no date")
+    return cursor
+
+
+def photos_for_past_window(
+    all_photos: list[dict],
+    *,
+    target: int,
+    published: dict,
+    size: int,
+) -> list[dict]:
+    """Rebuild the photo list for an earlier review window.
+
+    Anchors on the published window's start and steps back by whole windows, so
+    a past window can be re-embedded after its site thumbnails were pruned.
+    """
+    current = int(published.get("index") or 0)
+    if target >= current:
+        raise ValueError(
+            f"window {target} is not before the published window {current}"
+        )
+    anchor = parse_datetime(published.get("start"))
+    if anchor is None:
+        raise ValueError("published window has no start date")
+    start = window_start_before(all_photos, anchor, size, current - target)
+    plan = plan_window(all_photos, index=target, size=size, start=start)
+    return plan["photos"]
 
 
 def resolve_window(
@@ -529,6 +659,7 @@ def export_window(
     threshold: float,
     plan: dict,
     all_photos: list[dict],
+    capture: bool = True,
 ) -> dict[str, Any]:
     results = json.loads(results_path.read_text())
     photos = plan["photos"]
@@ -551,6 +682,16 @@ def export_window(
         if number % 100 == 0 or number == len(photos):
             console.print(f"[dim]Thumbs {number}/{len(photos)}[/dim]")
 
+    stored = missing = 0
+    if capture:
+        stored, missing = capture_features(
+            photos, int(window["index"]), thumbs_dir
+        )
+        console.print(
+            f"[green]✓[/green] Embedded {stored} photos "
+            f"({missing} without a readable source)"
+        )
+
     data_path = write_data(
         out_dir,
         items,
@@ -566,6 +707,8 @@ def export_window(
         "window": window,
         "skipped": skipped,
         "pruned": pruned,
+        "embedded": stored,
+        "unembedded": missing,
     }
 
 
@@ -613,6 +756,27 @@ def main() -> None:
         action="store_true",
         help="Replace the site repo's history with a single window commit",
     )
+    parser.add_argument(
+        "--skip-features",
+        action="store_true",
+        help="Do not embed the window (no pairwise training signal is kept)",
+    )
+    parser.add_argument(
+        "--backfill-features",
+        action="store_true",
+        help="Embed the window already in data.json, without rewriting the site",
+    )
+    parser.add_argument(
+        "--backfill-window",
+        type=int,
+        default=None,
+        help="Embed an earlier review window (recovers marks from pruned thumbs)",
+    )
+    parser.add_argument(
+        "--no-build-pairs",
+        action="store_true",
+        help="Skip refreshing the pair dataset after this export",
+    )
     args = parser.parse_args()
 
     console.print("\n[bold blue]PhotoScanner — Export Phone Review[/bold blue]\n")
@@ -640,6 +804,50 @@ def main() -> None:
         raise SystemExit(1)
 
     existing = current_window(out_dir / "data.json")
+    # Windows are a fixed photo count; take it from the published window so a
+    # replay lines up with how it was originally cut.
+    size = int((existing or {}).get("size") or args.window_size)
+
+    if args.backfill_window is not None:
+        if existing is None:
+            console.print("[red]No data.json window to anchor the walk from.[/red]")
+            raise SystemExit(1)
+        try:
+            photos = photos_for_past_window(
+                all_photos,
+                target=args.backfill_window,
+                published=existing,
+                size=size,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise SystemExit(1)
+        stored, missing = capture_features(
+            photos, args.backfill_window, out_dir / "thumbs"
+        )
+        console.print(
+            f"[green]✓[/green] Backfilled {stored} features for window "
+            f"{args.backfill_window} ({missing} without a readable source)"
+        )
+        return
+
+    if args.backfill_features:
+        if existing is None:
+            console.print("[red]No data.json window to backfill.[/red]")
+            raise SystemExit(1)
+        photos = photos_for_backfill(out_dir / "data.json", all_photos)
+        if not photos:
+            console.print("[red]No matching photos for the published window.[/red]")
+            raise SystemExit(1)
+        stored, missing = capture_features(
+            photos, int(existing.get("index", 0)), out_dir / "thumbs"
+        )
+        console.print(
+            f"[green]✓[/green] Backfilled {stored} features for window "
+            f"{existing.get('index')} ({missing} without a readable source)"
+        )
+        return
+
     try:
         index, size = resolve_window(
             existing,
@@ -689,6 +897,7 @@ def main() -> None:
         threshold=args.threshold,
         plan=plan,
         all_photos=all_photos,
+        capture=not args.skip_features,
     )
     marked = sum(1 for item in result["items"] if item["default_delete"])
     console.print(
@@ -709,6 +918,51 @@ def main() -> None:
         console.print(
             "\n[dim]Next: git push the site repo, or rerun with --push[/dim]"
         )
+
+    if not args.skip_features and not args.no_build_pairs:
+        rebuild_pair_dataset(previous_window=index - 1)
+
+
+def rebuild_pair_dataset(previous_window: int) -> None:
+    """Rebuild the frozen pair dataset after exporting a new window.
+
+    The window just finished is the natural held-out exam: its marks are fresh
+    and never entered training. If that window has no marks yet (their IDs were
+    not imported), fall back to a random split so the dataset still refreshes.
+    Failures here never fail the export, because the site is already published.
+    """
+    from build_pair_dataset import build_dataset
+
+    if previous_window < 1:
+        return
+    console.print(
+        f"\n[bold]Refreshing pair dataset (holdout: window {previous_window})[/bold]"
+    )
+    try:
+        meta = build_dataset(holdout_window=previous_window, quiet=True)
+    except ValueError as exc:
+        console.print(
+            f"[yellow]No holdout for window {previous_window} ({exc}); "
+            "using a random split.[/yellow]"
+        )
+        try:
+            meta = build_dataset(quiet=True)
+        except ValueError as fallback_exc:
+            console.print(f"[yellow]Pair dataset skipped: {fallback_exc}[/yellow]")
+            return
+    if meta is None:
+        console.print(
+            "[yellow]Pair dataset skipped: no usable pairs yet.[/yellow]"
+        )
+        return
+    console.print(
+        f"[green]✓[/green] Pairs: {meta['n_pairs']:,} across windows "
+        f"{meta['windows']} (holdout {meta['test_windows']})"
+    )
+    console.print(
+        "[dim]Marks for the window just reviewed count only after you import "
+        "them with move_to_album --uuids-file and rebuild.[/dim]"
+    )
 
 
 if __name__ == "__main__":
