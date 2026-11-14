@@ -35,13 +35,23 @@ The preference head is an MLP (512→128) — it beat the previous RandomForest 
 **iCloud Optimize / no originals on disk:** Train still prefers local originals when present. If a good photo’s file is missing, it looks up the UUID in `output/scan_results_*.json` / `output/review_session.json`, then uses a real thumb from `.cache/review_thumbs/` (`sha1(path|uuid|900).jpg`). Placeholder `missing_*.jpg` thumbs are excluded. BadPhotos and other full-res negatives are downscaled to max edge 900 before CLIP so they match thumb sharpness. Feature cache key includes `preprocess=max_edge_900` — old caches are cleared automatically.
 
 ## Bootstrap flagged features (one-off, recommended once)
-
 Deleted feedback photos normally can’t be recovered once Photos removes them — but their **review thumbs** usually still exist on disk. This extracts those features now, so the very next Train already has hard negatives instead of waiting a full Scan → Review → Learn cycle. Idempotent.
 
 ```bash
 python src/bootstrap_flagged_features.py --dry-run
 python src/bootstrap_flagged_features.py
 ```
+
+## Free disk space by emptying BadPhotos (optional)
+
+`Train` reads negative examples from `.cache/negative_features.pkl`, not from the folder. Once every image in `BadPhotos/` has a stored vector, you can delete the folder and keep the same training signal.
+
+```bash
+python src/embed_bad_photos.py --dry-run
+python src/embed_bad_photos.py
+```
+
+The script reports coverage and refuses to declare success while any image lacks a vector. It never deletes anything. Coverage is per backbone: switching backbone means those images must be re-embedded, so keep the folder if you plan to try another backbone.
 
 ## Scan
 
