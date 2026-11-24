@@ -35,7 +35,7 @@ COMMON_HELP = {
     "captions": "Fill empty captions in a smart album from learned usernames.",
     "wallpaper": "Find the current desktop wallpaper, or a screenshot, in Photos.",
     "twitter": "Curate Twitter/X images from Discord (TweetShift) with the same model.",
-    "summarize": "Write announcements_summary.txt via Cursor agent CLI.",
+    "summarize": "Write announcements_summary.txt via Command Code (DeepSeek V4.1 Flash).",
     "finetune": "Advanced: fine-tune the CLIP backbone itself on your photos.",
 }
 
@@ -413,12 +413,12 @@ def collect_summarize(state: dict) -> list[str]:
         extra.append("--dry-run")
     if more_options():
         path = ask_optional_path("announcements.txt path", last(state, "summarize", "path", None))
-        agent = ask_optional_path("agent binary", last(state, "summarize", "agent", None))
-        args.update(path=path, agent=agent)
+        cmd = ask_optional_path("cmd binary", last(state, "summarize", "cmd", None))
+        args.update(path=path, cmd=cmd)
         if path:
             extra += ["--path", path]
-        if agent:
-            extra += ["--agent", agent]
+        if cmd:
+            extra += ["--cmd", cmd]
     put(state, "summarize", **args)
     return extra
 

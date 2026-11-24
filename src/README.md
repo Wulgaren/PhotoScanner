@@ -299,13 +299,13 @@ Images go to `~/Pictures/TwitterImages/` (`all/`, `videos/`, `curated/`, `announ
 
 ## Summarize announcements
 
-Uses the Cursor agent CLI (`agent` on PATH, or `PHOTOSCANNER_AGENT`). Requires `agent login`.
+Uses the Command Code CLI (`cmd` on PATH, or `PHOTOSCANNER_CMD`) on model `deepseek/deepseek-v4.1-flash`. Requires `cmd login`.
 
 ```bash
 python src/summarize_announcements.py
 python src/summarize_announcements.py --path /path/to/announcements.txt
 python src/summarize_announcements.py --dry-run
-python src/summarize_announcements.py --agent /path/to/agent
+python src/summarize_announcements.py --cmd /path/to/cmd
 ```
 
 Also runs when the Twitter bot exits.

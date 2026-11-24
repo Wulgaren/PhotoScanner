@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Write announcements_summary.txt from announcements.txt via Cursor agent CLI
-(`agent -p --mode ask`).
+Write announcements_summary.txt from announcements.txt via Command Code headless
+(`cmd -p --model deepseek/deepseek-v4.1-flash`).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from pathlib import Path
 from photo_scanner.paths import CONFIG_PATH
 
 SUMMARY_NAME = "announcements_summary.txt"
+MODEL = "deepseek/deepseek-v4.1-flash"
 
 DIGEST_RULES = """\
 You write a short announcement digest as flat plaintext bullets.
@@ -40,12 +41,12 @@ concept-photo schedules, tracklists, fan sentiment, TikToks, slogans, sources.
 """
 
 
-def default_agent() -> Path | None:
-    env = os.environ.get("PHOTOSCANNER_AGENT")
+def default_cmd() -> Path | None:
+    env = os.environ.get("PHOTOSCANNER_CMD")
     if env:
         p = Path(env).expanduser().resolve()
         return p if p.is_file() else None
-    found = shutil.which("agent")
+    found = shutil.which("cmd")
     return Path(found).resolve() if found else None
 
 
@@ -93,15 +94,16 @@ def normalize_digest(text: str) -> str:
     return "\n\n".join(items) + "\n"
 
 
-def run_agent_digest(raw: str, *, agent: Path) -> str:
+def run_cmd_digest(raw: str, *, cmd: Path) -> str:
     prompt = build_prompt(raw)
     proc = subprocess.run(
         [
-            str(agent),
+            str(cmd),
             "-p",
-            "--mode",
-            "ask",
             "--trust",
+            "--no-session",
+            "--model",
+            MODEL,
             "--output-format",
             "text",
             prompt,
@@ -114,14 +116,14 @@ def run_agent_digest(raw: str, *, agent: Path) -> str:
         raise RuntimeError(err)
     body = (proc.stdout or "").strip()
     if not body:
-        raise RuntimeError("agent returned empty digest")
+        raise RuntimeError("cmd returned empty digest")
     return normalize_digest(body)
 
 
 def write_announcements_summary(
     announcements_path: Path,
     *,
-    agent: Path | None = None,
+    cmd: Path | None = None,
     dry_run: bool = False,
 ) -> bool | None:
     """
@@ -130,7 +132,7 @@ def write_announcements_summary(
     Returns:
         True if a summary was written (or printed in dry_run),
         None if nothing to do (no file, or empty),
-        False on failure (I/O, missing agent, agent process error).
+        False on failure (I/O, missing cmd, cmd process error).
     """
     if not announcements_path.is_file():
         return None
@@ -141,16 +143,16 @@ def write_announcements_summary(
         return False
     if not raw.strip():
         return None
-    agent_path = agent or default_agent()
-    if agent_path is None or not agent_path.is_file():
+    cmd_path = cmd or default_cmd()
+    if cmd_path is None or not cmd_path.is_file():
         print(
-            "⚠️  Cursor agent CLI not found; install/login so `agent` is on PATH "
-            "(or set PHOTOSCANNER_AGENT)",
+            "⚠️  Command Code CLI not found; install/login so `cmd` is on PATH "
+            "(or set PHOTOSCANNER_CMD)",
             file=sys.stderr,
         )
         return False
     try:
-        body = run_agent_digest(raw, agent=agent_path)
+        body = run_cmd_digest(raw, cmd=cmd_path)
     except RuntimeError as e:
         print(f"⚠️  Summarizer failed: {e}", file=sys.stderr)
         return False
@@ -165,7 +167,7 @@ def write_announcements_summary(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Write announcements_summary.txt from announcements.txt (Cursor agent CLI)."
+        description="Write announcements_summary.txt from announcements.txt (Command Code headless)."
     )
     parser.add_argument(
         "--path",
@@ -173,9 +175,9 @@ def main() -> None:
         help="Path to announcements.txt (default: from config.json save_directory)",
     )
     parser.add_argument(
-        "--agent",
+        "--cmd",
         type=Path,
-        help="Path to agent binary (or set PHOTOSCANNER_AGENT; default: agent on PATH)",
+        help="Path to the Command Code CLI binary (or set PHOTOSCANNER_CMD; default: cmd on PATH)",
     )
     parser.add_argument(
         "--dry-run",
@@ -198,8 +200,8 @@ def main() -> None:
         print(f"Not found: {ann}", file=sys.stderr)
         sys.exit(1)
 
-    agent = args.agent.expanduser().resolve() if args.agent else None
-    r = write_announcements_summary(ann, agent=agent, dry_run=args.dry_run)
+    cmd = args.cmd.expanduser().resolve() if args.cmd else None
+    r = write_announcements_summary(ann, cmd=cmd, dry_run=args.dry_run)
     if r is False:
         sys.exit(1)
 
